@@ -15,26 +15,27 @@ A full-stack application that predicts NBA game outcomes using a self-trained ma
 
 ## Project structure
 
+```
 basketball-predictor/
-├── data-pipeline/ # Ingestion and preprocessing (Python)
-│ ├── ingestion/ # Scripts pulling raw game and player data
-│ ├── preprocessing/ # Cleaning and feature engineering
-│ ├── data/
-│ │ ├── raw/ # Untouched pulls (gitignored)
-│ │ └── processed/ # Engineered features (gitignored)
-│ └── requirements.txt
-├── ml-training/ # Model development and experiments (Python)
-│ ├── notebooks/ # Exploratory data analysis
-│ ├── models/ # Saved model artifacts (gitignored)
-│ └── mlruns/ # MLflow experiment tracking (gitignored)
-├── inference-service/ # Containerized model-serving API
-├── backend/ # Java Spring Boot REST API + PostgreSQL
-├── frontend/ # React dashboard
-├── infra/ # Terraform and deployment configuration
-├── .github/workflows/ # CI/CD pipelines
+├── data-pipeline/                     # Ingestion and preprocessing (Python)
+│   ├── ingestion/                     # Scripts pulling raw game and player data
+│   ├── preprocessing/                 # Cleaning and feature engineering
+│   ├── data/
+│   │   ├── raw/                       # Untouched pulls (gitignored)
+│   │   └── processed/                 # Engineered features (gitignored)
+│   └── requirements.txt
+├── ml-training/                       # Model development and experiments (Python)
+│   ├── notebooks/                     # Exploratory data analysis
+│   ├── models/                        # Saved model artifacts (gitignored)
+│   └── mlruns/                        # MLflow experiment tracking (gitignored)
+├── inference-service/                 # Containerized model-serving API
+├── backend/                           # Java Spring Boot REST API + PostgreSQL
+├── frontend/                          # React dashboard
+├── infra/                             # Terraform and deployment configuration
+├── .github/workflows/                 # CI/CD pipelines
 ├── basketball-predictor.code-workspace # VS Code multi-root workspace
 └── README.md
-
+```
 
 ## Status
 
