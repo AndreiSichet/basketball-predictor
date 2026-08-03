@@ -1,0 +1,10 @@
+{
+  "folders": [
+    { "name": "data-pipeline", "path": "data-pipeline" },
+    { "name": "ml-training", "path": "ml-training" },
+    { "name": "backend", "path": "backend" },
+    { "name": "frontend", "path": "frontend" },
+    { "name": "root", "path": "." }
+  ],
+  "settings": {}
+}

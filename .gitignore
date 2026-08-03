@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data & ML artifacts
+data-pipeline/data/raw/*
+!data-pipeline/data/raw/.gitkeep
+data-pipeline/data/processed/*
+!data-pipeline/data/processed/.gitkeep
+ml-training/models/*
+!ml-training/models/.gitkeep
+ml-training/mlruns/*
+!ml-training/mlruns/.gitkeep
+
+# Java
+backend/target/
+*.class
+
+# Node
+frontend/node_modules/
+frontend/build/
+
+# Env & secrets
+.env
+*.pem
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
