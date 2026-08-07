@@ -7,6 +7,13 @@ Output: data-pipeline/data/processed/model_dataset.csv — the model-ready table
 
 Early-season NaN rows (incomplete rolling windows) are left as-is; whether
 to drop/impute them belongs to the training phase, not here.
+
+IMPORTANT — features vs. labels:
+  Everything derived from WL and PTS is a POST-GAME OUTCOME. Those columns
+  (HOME_WIN, HOME_PTS, AWAY_PTS, HOME_MARGIN, TOTAL_PTS) exist only as
+  prediction targets and MUST be excluded from any training feature matrix
+  — feeding them in as inputs would leak the answer. See LABEL_COLUMNS
+  below for the authoritative list.
 """
 
 from pathlib import Path
@@ -17,19 +24,32 @@ PROCESSED_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "processed"
 INPUT_PATH = PROCESSED_DATA_DIR / "games_final.csv"
 OUTPUT_PATH = PROCESSED_DATA_DIR / "model_dataset.csv"
 
+# Known strictly before tip-off — safe to train on.
+PREGAME_FEATURE_COLUMNS = ["REST_DAYS", "IS_BACK_TO_BACK", "TEAM_ELO"]
+
+# Known only after the final buzzer. Carried through here to build targets;
+# never to be used as model inputs.
+POSTGAME_OUTCOME_COLUMNS = ["WL", "PTS"]
+
+# Identifiers — not features, not labels.
+ID_COLUMNS = ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME"]
+
+# Columns that are properties of the game itself (identical on the home and
+# away row) and so are kept unprefixed rather than split into HOME_/AWAY_.
+GAME_LEVEL_COLUMNS = ["GAME_ID", "GAME_DATE"]
+
+# The label columns present in the saved dataset. Drop these from X when training.
+LABEL_COLUMNS = ["HOME_WIN", "HOME_PTS", "AWAY_PTS", "HOME_MARGIN", "TOTAL_PTS"]
+
 
 def build_keep_columns(df: pd.DataFrame) -> list:
     rolling_cols = [c for c in df.columns if c.startswith("ROLL5_") or c.startswith("ROLL10_")]
-    return ["GAME_ID", "TEAM_ID", "TEAM_NAME", "WL"] + rolling_cols + [
-        "REST_DAYS",
-        "IS_BACK_TO_BACK",
-        "TEAM_ELO",
-    ]
+    return ID_COLUMNS + POSTGAME_OUTCOME_COLUMNS + rolling_cols + PREGAME_FEATURE_COLUMNS
 
 
 def split_and_prefix(df: pd.DataFrame, keep_cols: list, prefix: str) -> pd.DataFrame:
     subset = df.loc[df["IS_HOME"] == (prefix == "HOME"), keep_cols]
-    rename_map = {c: f"{prefix}_{c}" for c in keep_cols if c != "GAME_ID"}
+    rename_map = {c: f"{prefix}_{c}" for c in keep_cols if c not in GAME_LEVEL_COLUMNS}
     return subset.rename(columns=rename_map)
 
 
@@ -41,10 +61,16 @@ def main():
     home = split_and_prefix(df, keep_cols, "HOME")
     away = split_and_prefix(df, keep_cols, "AWAY")
 
-    merged = home.merge(away, on="GAME_ID", how="inner", validate="one_to_one")
+    merged = home.merge(away, on=GAME_LEVEL_COLUMNS, how="inner", validate="one_to_one")
 
+    # --- Labels (post-game outcomes) -------------------------------------
+    # HOME_PTS/AWAY_PTS are kept for debugging and for comparing actual
+    # totals against over/under lines once odds data is sourced.
     merged["HOME_WIN"] = (merged["HOME_WL"] == "W").astype(int)
+    merged["HOME_MARGIN"] = merged["HOME_PTS"] - merged["AWAY_PTS"]
+    merged["TOTAL_PTS"] = merged["HOME_PTS"] + merged["AWAY_PTS"]
     merged = merged.drop(columns=["HOME_WL", "AWAY_WL"])
+    # ---------------------------------------------------------------------
 
     merged.to_csv(OUTPUT_PATH, index=False)
 
@@ -60,6 +86,9 @@ def main():
 
     print("\nNaN counts (early-season rolling windows still to be decided later):")
     print(merged[["HOME_ROLL5_PTS", "AWAY_ROLL5_PTS"]].isna().sum())
+
+    print(f"\nLabel columns (exclude from training features): {LABEL_COLUMNS}")
+    print(merged[LABEL_COLUMNS].describe())
 
     print("\nPreview:")
     print(merged.head())
