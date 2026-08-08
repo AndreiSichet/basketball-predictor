@@ -9,11 +9,14 @@ Early-season NaN rows (incomplete rolling windows) are left as-is; whether
 to drop/impute them belongs to the training phase, not here.
 
 IMPORTANT — features vs. labels:
-  Everything derived from WL and PTS is a POST-GAME OUTCOME. Those columns
-  (HOME_WIN, HOME_PTS, AWAY_PTS, HOME_MARGIN, TOTAL_PTS) exist only as
-  prediction targets and MUST be excluded from any training feature matrix
-  — feeding them in as inputs would leak the answer. See LABEL_COLUMNS
-  below for the authoritative list.
+  Everything derived from WL, PTS, REB and AST is a POST-GAME OUTCOME.
+  Those columns exist only as prediction targets and MUST be excluded from
+  any training feature matrix — feeding them in as inputs would leak the
+  answer. See LABEL_COLUMNS below for the authoritative list.
+
+  Note the ROLL5_/ROLL10_ versions of REB and AST are a different thing
+  entirely: those are trailing averages of PRIOR games and remain legitimate
+  features. Only the raw single-game values are off-limits.
 """
 
 from pathlib import Path
@@ -29,7 +32,7 @@ PREGAME_FEATURE_COLUMNS = ["REST_DAYS", "IS_BACK_TO_BACK", "TEAM_ELO"]
 
 # Known only after the final buzzer. Carried through here to build targets;
 # never to be used as model inputs.
-POSTGAME_OUTCOME_COLUMNS = ["WL", "PTS"]
+POSTGAME_OUTCOME_COLUMNS = ["WL", "PTS", "REB", "AST"]
 
 # Identifiers — not features, not labels.
 ID_COLUMNS = ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME"]
@@ -39,7 +42,21 @@ ID_COLUMNS = ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME"]
 GAME_LEVEL_COLUMNS = ["GAME_ID", "GAME_DATE"]
 
 # The label columns present in the saved dataset. Drop these from X when training.
-LABEL_COLUMNS = ["HOME_WIN", "HOME_PTS", "AWAY_PTS", "HOME_MARGIN", "TOTAL_PTS"]
+LABEL_COLUMNS = [
+    "HOME_WIN",
+    "HOME_PTS",
+    "AWAY_PTS",
+    "HOME_MARGIN",
+    "TOTAL_PTS",
+    "HOME_REB",
+    "AWAY_REB",
+    "REB_MARGIN",
+    "TOTAL_REB",
+    "HOME_AST",
+    "AWAY_AST",
+    "AST_MARGIN",
+    "TOTAL_AST",
+]
 
 
 def build_keep_columns(df: pd.DataFrame) -> list:
@@ -69,6 +86,10 @@ def main():
     merged["HOME_WIN"] = (merged["HOME_WL"] == "W").astype(int)
     merged["HOME_MARGIN"] = merged["HOME_PTS"] - merged["AWAY_PTS"]
     merged["TOTAL_PTS"] = merged["HOME_PTS"] + merged["AWAY_PTS"]
+    merged["REB_MARGIN"] = merged["HOME_REB"] - merged["AWAY_REB"]
+    merged["TOTAL_REB"] = merged["HOME_REB"] + merged["AWAY_REB"]
+    merged["AST_MARGIN"] = merged["HOME_AST"] - merged["AWAY_AST"]
+    merged["TOTAL_AST"] = merged["HOME_AST"] + merged["AWAY_AST"]
     merged = merged.drop(columns=["HOME_WL", "AWAY_WL"])
     # ---------------------------------------------------------------------
 
