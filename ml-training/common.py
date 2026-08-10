@@ -16,7 +16,10 @@ would reveal it.
 
 from pathlib import Path
 
-import mlflow
+# NOTE: mlflow is imported inside setup_mlflow() rather than here on purpose.
+# The inference service imports this module for FEATURE_COLUMNS and never
+# tracks an experiment, and mlflow drags in Flask, SQLAlchemy and a large
+# dependency tree that has no business in a serving container.
 
 # Split boundaries. Train is "everything before validation" rather than a
 # literal range, so extending the dataset backwards grows training instead
@@ -32,6 +35,37 @@ TRACKING_URI = f"sqlite:///{(TRACKING_DIR / 'mlflow.db').as_posix()}"
 ARTIFACT_URI = (TRACKING_DIR / "artifacts").as_uri()
 
 
+# The 17 pre-game features available for each side. model_dataset.csv carries
+# each one twice, prefixed HOME_ and AWAY_, for 34 model inputs in total.
+#
+# ORDER IS PART OF THE CONTRACT. The saved models store these names and
+# validate against them at predict time, so anything assembling a feature
+# vector for inference must build it in exactly this order.
+PER_SIDE_FEATURES = [
+    "ROLL5_WIN_PCT",
+    "ROLL5_PTS",
+    "ROLL5_PLUS_MINUS",
+    "ROLL5_FG_PCT",
+    "ROLL5_REB",
+    "ROLL5_AST",
+    "ROLL5_TOV",
+    "ROLL10_WIN_PCT",
+    "ROLL10_PTS",
+    "ROLL10_PLUS_MINUS",
+    "ROLL10_FG_PCT",
+    "ROLL10_REB",
+    "ROLL10_AST",
+    "ROLL10_TOV",
+    "REST_DAYS",
+    "IS_BACK_TO_BACK",
+    "TEAM_ELO",
+]
+
+FEATURE_COLUMNS = [f"{side}_{feat}" for side in ("HOME", "AWAY") for feat in PER_SIDE_FEATURES]
+
+ROLLING_FEATURE_COLUMNS = [c for c in FEATURE_COLUMNS if "ROLL5_" in c or "ROLL10_" in c]
+
+
 def setup_mlflow(experiment_name: str):
     """Point MLflow at the SQLite store, creating the experiment if needed.
 
@@ -44,6 +78,8 @@ def setup_mlflow(experiment_name: str):
     the shared root by their own unique id, so experiments can share one
     artifact root without colliding.
     """
+    import mlflow  # deferred: see the note at the top of this module
+
     TRACKING_DIR.mkdir(parents=True, exist_ok=True)
     mlflow.set_tracking_uri(TRACKING_URI)
 

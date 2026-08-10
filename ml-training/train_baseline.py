@@ -35,6 +35,11 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 
+# The feature-column contract now lives in common.py, since inference needs
+# it as much as training does. Re-exported here so the scripts that already
+# import it from this module keep working.
+from common import FEATURE_COLUMNS, ROLLING_FEATURE_COLUMNS
+
 DATASET_PATH = (
     Path(__file__).resolve().parents[1]
     / "data-pipeline"
@@ -47,34 +52,6 @@ DATASET_PATH = (
 # than randomly is the only honest option: a random split would train on
 # future games to predict past ones.
 TEST_SEASON_COUNT = 2
-
-# The 17 pre-game features available for each side. model_dataset.csv carries
-# each one twice, prefixed HOME_ and AWAY_, for 34 model inputs in total.
-PER_SIDE_FEATURES = [
-    "ROLL5_WIN_PCT",
-    "ROLL5_PTS",
-    "ROLL5_PLUS_MINUS",
-    "ROLL5_FG_PCT",
-    "ROLL5_REB",
-    "ROLL5_AST",
-    "ROLL5_TOV",
-    "ROLL10_WIN_PCT",
-    "ROLL10_PTS",
-    "ROLL10_PLUS_MINUS",
-    "ROLL10_FG_PCT",
-    "ROLL10_REB",
-    "ROLL10_AST",
-    "ROLL10_TOV",
-    "REST_DAYS",
-    "IS_BACK_TO_BACK",
-    "TEAM_ELO",
-]
-
-FEATURE_COLUMNS = [f"{side}_{feat}" for side in ("HOME", "AWAY") for feat in PER_SIDE_FEATURES]
-
-ROLLING_FEATURE_COLUMNS = [
-    c for c in FEATURE_COLUMNS if "ROLL5_" in c or "ROLL10_" in c
-]
 
 BOOLEAN_FEATURE_COLUMNS = ["HOME_IS_BACK_TO_BACK", "AWAY_IS_BACK_TO_BACK"]
 
