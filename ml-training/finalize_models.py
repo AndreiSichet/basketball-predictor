@@ -2,27 +2,21 @@
 Retrain the seven production models on the complete dataset.
 
 Input:  data-pipeline/data/processed/model_dataset.csv
-Output: ml-training/models/<target>.json (XGBoost native format), plus one
-        MLflow run per model under the "production" experiment.
+Output: ml-training/models/<target>.json, plus one MLflow run per model
+        under the "production" experiment.
 
-Everything before this script split the data to answer "which model should
-we ship?". That question is now settled, so the split has done its job and
-holding 2023-2025 back any longer would just mean deploying a model that
-ignores three seasons of real signal. These models train on all of it.
+Model selection is finished, so the train/val/test split has done its job.
+Holding 2023-2025 back now would only mean shipping models that ignore
+three seasons of data. These train on everything.
 
-THESE MODELS ARE UNEVALUATED, BY CONSTRUCTION. There is no held-out data
-left to score them on, so this script deliberately logs no performance
-metrics — a number here would only invite being read as validation of the
-shipped model. What each configuration is worth was established during
-selection, and those numbers live in the per-target experiments
-("moneyline", "spread", ...) alongside the runs that produced them.
+No metrics are logged: there is no holdout left to score against, and a
+number here would be read as validation of the shipped model. The selection
+numbers are in the per-target experiments alongside the runs that produced
+them.
 
-ONE CONFIG FOR ALL SEVEN. The 2x2 grid found no target where tuning beat
-the hand-picked max_depth=4 / learning_rate=0.05 by a meaningful margin, so
-seven slightly different configs would buy noise at the cost of seven
-things to document and keep straight. Tree counts still differ per target,
-because those are not a tuning choice — each is what early stopping
-measured for that target.
+All seven use one config. Tuning beat max_depth=4 / learning_rate=0.05 on
+no target, so seven variants would add maintenance for noise. Tree counts
+still differ per target, since those come from early stopping, not tuning.
 """
 
 from pathlib import Path
@@ -43,16 +37,13 @@ from train_regression_xgb import experiment_name
 MODELS_DIR = Path(__file__).resolve().parent / "models"
 PRODUCTION_EXPERIMENT = "production"
 
-# Tree counts as measured by early stopping on the 2023 validation season,
-# under the max_depth=4 / learning_rate=0.05 config, in train_moneyline_xgb.py
-# and train_regression_xgb.py.
+# Tree counts from early stopping on the 2023 validation season, under
+# max_depth=4 / learning_rate=0.05, in train_moneyline_xgb.py and
+# train_regression_xgb.py.
 #
-# Frozen here rather than read from MLflow at runtime for one specific
-# reason: ml-training/mlruns/ is gitignored, so a script that fetched these
-# live could not rebuild the production models from a fresh clone. That
-# makes these numbers part of the model definition, and they belong in
-# version control with everything else that defines it. verify_tree_counts()
-# below re-checks them against MLflow whenever it happens to be available.
+# Frozen here rather than read from MLflow at runtime because mlruns/ is
+# gitignored, so a live lookup couldn't rebuild these models from a fresh
+# clone. verify_tree_counts() re-checks them when MLflow is available.
 TREE_COUNTS = {
     "moneyline": 118,
     "spread": 82,
@@ -63,14 +54,13 @@ TREE_COUNTS = {
     "ast_total": 141,
 }
 
-# The config those tree counts were measured under. Any run that used a
-# different depth or learning rate is a tuning run, not the original.
+# The config those counts were measured under. Any run with a different
+# depth or learning rate is a tuning run, not the original.
 ORIGINAL_MAX_DEPTH = 4
 ORIGINAL_LEARNING_RATE = 0.05
 
-# (experiment key, display label, target column, is_classification). Derived
-# from REGRESSION_TARGETS rather than restated, so a target cannot be added
-# to the pipeline and silently skipped here.
+# (experiment key, label, target column, is_classification). Built from
+# REGRESSION_TARGETS so a new target can't be silently skipped here.
 TASKS = [(MONEYLINE_EXPERIMENT, "Moneyline", MONEYLINE_TARGET, True)] + [
     (experiment_name(label), label, target, False)
     for target, label, _stat, _combine in REGRESSION_TARGETS
@@ -78,11 +68,10 @@ TASKS = [(MONEYLINE_EXPERIMENT, "Moneyline", MONEYLINE_TARGET, True)] + [
 
 
 def final_params(classification: bool, trees: int) -> dict:
-    """The selection-phase config, with early stopping swapped for a fixed count.
+    """Selection config with early stopping replaced by a fixed tree count.
 
-    early_stopping_rounds has to come out: it requires an eval_set, and there
-    is no held-out set here. n_estimators stops being an upper bound and
-    becomes the actual number of trees built.
+    early_stopping_rounds needs an eval_set, and there is no holdout here.
+    n_estimators becomes the actual number of trees rather than a cap.
     """
     source = MONEYLINE_PARAMS if classification else REGRESSION_PARAMS
     params = {k: v for k, v in source.items() if k != "early_stopping_rounds"}
@@ -91,11 +80,9 @@ def final_params(classification: bool, trees: int) -> dict:
 
 
 def verify_tree_counts() -> None:
-    """Re-check the frozen counts against the runs they were taken from.
+    """Check the frozen counts against the MLflow runs they came from.
 
-    Advisory only. MLflow is not required to build production models, but
-    when it is present there is no reason to let a stale transcription go
-    unnoticed.
+    Advisory only: MLflow isn't required to build the models.
     """
     section("TREE COUNT VERIFICATION")
     mlflow.set_tracking_uri(TRACKING_URI)
@@ -170,7 +157,7 @@ def log_production_run(key, label, target, classification, model, params, path, 
             }
         )
 
-        # No metrics: see the module docstring. Nothing here has been scored.
+        # No metrics on purpose, see module docstring.
         predictions = model.predict_proba(sample) if classification else model.predict(sample)
         mlflow.xgboost.log_model(
             model,

@@ -3,23 +3,16 @@ Prediction API for the seven basketball models.
 
 Run with:  uvicorn app:app --port 8000    (from inference-service/)
 
-Everything expensive happens once at startup: the historical games table is
-parsed and all seven models are loaded into memory. A request then does
-nothing but build a 34-column feature row and run seven predictions, which
-is the only reason this can answer in milliseconds rather than seconds.
+The games table and all seven models load once at startup. A request then
+only builds a 34-column feature row and runs seven predictions.
 
-FRESHNESS IS PART OF THE CONTRACT, NOT AN AFTERTHOUGHT. This service can
-only see games that are already in games_final.csv. If the pipeline has not
-run since last night, predictions are computed from stale history and are
-silently worse — no error, no exception, just quietly degraded numbers.
-That failure is invisible from the outside, so every response carries
-data_as_of and stale, whether or not the caller asked. A client that
-ignores them is making an informed choice; one that never sees them is not.
+Every response includes data_as_of and stale. The service can only see
+games already in games_final.csv, so if the pipeline hasn't run, results
+are silently computed from old history - no error, just worse numbers.
+That's invisible to callers unless the response says so.
 
-The feature-building logic deliberately lives in ml-training/live_features.py
-rather than here. Inference features must match training features exactly,
-and the surest way to guarantee that is for there to be one implementation
-with a verification harness attached, not a copy in the serving layer.
+Feature building lives in ml-training/live_features.py, not here, so there
+is one implementation with a verification harness rather than a copy.
 """
 
 from contextlib import asynccontextmanager
@@ -32,9 +25,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from xgboost import XGBClassifier, XGBRegressor
 
-# ml-training is a sibling folder, not an installed package. Same tradeoff
-# the feature module already makes to reach the pipeline scripts: an
-# explicit path insert, in exchange for never duplicating shared logic.
+# ml-training is a sibling folder, not an installed package, so it goes on
+# sys.path. Same tradeoff live_features.py makes to reach the pipeline.
 ML_TRAINING_DIR = Path(__file__).resolve().parents[1] / "ml-training"
 if str(ML_TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(ML_TRAINING_DIR))
@@ -44,20 +36,16 @@ from live_features import get_live_features, load_games_final  # noqa: E402
 
 MODELS_DIR = ML_TRAINING_DIR / "models"
 
-# Past this many days behind, responses are flagged stale. Two days rather
-# than one because the pipeline running a little late is normal operations,
-# not a fault worth crying wolf over.
+# Responses are flagged stale past this. Two days, not one, because the
+# pipeline running slightly late is normal.
 STALE_AFTER_DAYS = 2
 
-# How far past the newest game a prediction may be requested. One day is the
-# real limit rather than an arbitrary one: REST_DAYS is measured from the
-# last game present in the data, so for a fixture further out — with games
-# in between that have not been played yet — that gap would be computed
-# against the wrong prior game. The models were never trained on that.
+# How far ahead a prediction may be requested. REST_DAYS is measured from
+# the last game in the data, so for a fixture further out - with unplayed
+# games in between - the gap would be measured against the wrong game.
 MAX_DAYS_AHEAD = 1
 
-# What this service serves, declared explicitly rather than discovered.
-# (model file stem, response field, is_classification)
+# What this service serves. (model file stem, response field, is_classification)
 MODEL_REGISTRY = [
     ("moneyline", "home_win_probability", True),
     ("spread", "home_margin", False),
@@ -110,17 +98,16 @@ state = ServiceState()
 def load_models() -> dict:
     """Load all seven models as sklearn-API estimators.
 
-    Loading into XGBClassifier/XGBRegressor rather than a raw Booster keeps
-    predict()/predict_proba() and the feature-name validation that comes
-    with them — the booster API would happily accept a mis-ordered feature
-    vector and return a confident wrong answer.
+    XGBClassifier/XGBRegressor rather than raw Booster, to keep
+    predict()/predict_proba() and their feature-name validation. The
+    booster API would accept a mis-ordered feature vector without complaint.
     """
     on_disk = {path.stem for path in MODELS_DIR.glob("*.json")}
     expected = {key for key, _field, _clf in MODEL_REGISTRY}
 
     if on_disk != expected:
-        # Loud at startup beats a target silently going unserved because
-        # someone added a model and not a registry entry.
+        # Fail at startup rather than let a model go unserved because
+        # someone added a file and not a registry entry.
         raise RuntimeError(
             f"models/ does not match the registry.\n"
             f"  missing from disk: {sorted(expected - on_disk) or 'none'}\n"
@@ -166,7 +153,7 @@ def freshness() -> tuple:
 
 @app.get("/health")
 def health():
-    """Liveness plus the freshness signal, so monitoring can alert on staleness."""
+    """Liveness plus freshness, so monitoring can alert on stale data."""
     days_behind, stale = freshness()
     return {
         "status": "ok",

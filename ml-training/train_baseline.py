@@ -1,25 +1,18 @@
 """
-Baseline models for all three prediction targets: moneyline, spread, totals.
+Baseline models for moneyline, spread, totals, rebounds and assists.
 
 Input:  data-pipeline/data/processed/model_dataset.csv
-Output: printed metrics only. Nothing is saved — these are reference numbers,
-        not deployable models.
+Output: printed metrics only, nothing saved.
 
-Every target gets a naive baseline before an ML one, so anything trained
-later has a bar to clear. A logistic regression that can't beat "the home
-team always wins" isn't worth shipping, and without this table there'd be
-no way to know.
+Each target gets a naive baseline before an ML one, so later models have a
+bar to clear.
 
-Two data decisions live here rather than in the pipeline, because they are
-model requirements rather than properties of the data:
-
-  - Early-season rows with incomplete rolling windows are DROPPED. Linear
-    and logistic regression cannot ingest NaN. The gradient-boosting model
-    coming later can, and should revisit this rather than inherit it.
-  - Features are standardized with a scaler FIT ON THE TRAINING SET ONLY.
-    These features span wildly different ranges (TEAM_ELO ~1500, FG_PCT
-    ~0.45, REST_DAYS 0-7), which regression is sensitive to. Fitting the
-    scaler on the full dataset would leak test-set statistics into training.
+Two choices made here rather than in the pipeline, because they are model
+requirements, not properties of the data:
+  - Rows with incomplete rolling windows are dropped; linear and logistic
+    regression can't take NaN. XGBoost later can, and doesn't drop them.
+  - Features are standardized with the scaler fit on train only. Fitting on
+    everything would leak test statistics into training.
 """
 
 from pathlib import Path
@@ -35,9 +28,8 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 
-# The feature-column contract now lives in common.py, since inference needs
-# it as much as training does. Re-exported here so the scripts that already
-# import it from this module keep working.
+# Defined in common.py because inference needs them too. Re-exported here
+# so existing imports from this module keep working.
 from common import FEATURE_COLUMNS, ROLLING_FEATURE_COLUMNS
 
 DATASET_PATH = (
@@ -48,15 +40,14 @@ DATASET_PATH = (
     / "model_dataset.csv"
 )
 
-# The most recent N seasons are held out. Splitting chronologically rather
-# than randomly is the only honest option: a random split would train on
+# Held out as test. Chronological, not random: a random split would train on
 # future games to predict past ones.
 TEST_SEASON_COUNT = 2
 
 BOOLEAN_FEATURE_COLUMNS = ["HOME_IS_BACK_TO_BACK", "AWAY_IS_BACK_TO_BACK"]
 
-# Identifiers and post-game outcomes. Everything else in the file is a
-# feature — asserted at load time so the two lists can't drift apart.
+# Ids and post-game outcomes. Everything else in the file must be a feature;
+# load_dataset() checks this.
 ID_COLUMNS = [
     "GAME_ID",
     "GAME_DATE",
@@ -65,9 +56,8 @@ ID_COLUMNS = [
     "AWAY_TEAM_ID",
     "AWAY_TEAM_NAME",
 ]
-# Kept in sync with LABEL_COLUMNS in build_final_dataset.py. The REB/AST
-# entries are raw single-game outcomes — unrelated to the ROLL5_/ROLL10_
-# REB and AST features, which are trailing averages of prior games.
+# Mirrors LABEL_COLUMNS in build_final_dataset.py. These REB/AST entries are
+# raw single-game results, not the ROLL5_/ROLL10_ averages, which are features.
 LABEL_COLUMNS = [
     "HOME_WIN",
     "HOME_PTS",
@@ -86,14 +76,10 @@ LABEL_COLUMNS = [
 
 METRIC_PRECISION = {"Accuracy": 4, "Log loss": 4, "MAE": 2, "RMSE": 2}
 
-# Every regression target follows one shape: a naive baseline built from the
-# two teams' own ROLL10 average of that same stat — differenced for margins,
-# summed for totals — then a LinearRegression on the full feature set.
-#
-# The target column is listed explicitly rather than derived from the stat
-# because HOME_MARGIN breaks the {STAT}_MARGIN convention the others follow.
+# (target column, table label, ROLL10 stat, how to combine). The target
+# column is listed rather than derived because HOME_MARGIN doesn't follow
+# the {STAT}_MARGIN naming the others use.
 REGRESSION_TARGETS = [
-    # (target column, table label, ROLL10 stat, how to combine)
     ("HOME_MARGIN", "Spread", "PTS", "diff"),
     ("TOTAL_PTS", "Totals", "PTS", "sum"),
     ("REB_MARGIN", "REB margin", "REB", "diff"),
@@ -104,18 +90,15 @@ REGRESSION_TARGETS = [
 
 
 def derive_season(game_date: pd.Series) -> pd.Series:
-    """Season label = the calendar year it tipped off in, August boundary.
+    """Season = year it tipped off in, August boundary.
 
-    Mirrors data-pipeline/preprocessing/build_rolling_features.py.
+    Same rule as build_rolling_features.py.
     """
     return game_date.dt.year.where(game_date.dt.month >= 8, game_date.dt.year - 1)
 
 
 def elo_expected_score(rating: pd.Series, opponent_rating: pd.Series) -> pd.Series:
-    """Closed-form Elo win probability, same formula as build_elo_ratings.py.
-
-    No training involved — this is what the rating gap already implies.
-    """
+    """Elo win probability. Same formula as build_elo_ratings.py, no training."""
     return 1 / (1 + 10 ** ((opponent_rating - rating) / 400))
 
 
@@ -128,7 +111,7 @@ def load_dataset() -> pd.DataFrame:
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df["SEASON"] = derive_season(df["GAME_DATE"])
 
-    # Regression needs numbers, not True/False.
+    # Models need numbers, not True/False.
     for col in BOOLEAN_FEATURE_COLUMNS:
         df[col] = df[col].astype(int)
 
@@ -200,20 +183,20 @@ def evaluate_moneyline(train, test, x_train, x_test) -> list:
     y_train, y_test = train["HOME_WIN"], test["HOME_WIN"]
     results = []
 
-    # Tier 1 - naive: home team always wins.
+    # Tier 1: home team always wins.
     naive_pred = np.ones(len(y_test), dtype=int)
     naive_acc = accuracy_score(y_test, naive_pred)
     print(f"Naive (always home)  accuracy {naive_acc:.4f}  <- the test set's home-win rate")
     results.append(("Moneyline", "Naive: always home", [("Accuracy", naive_acc)]))
 
-    # Tier 2 - informed, untrained: what the Elo gap already implies.
+    # Tier 2: what the Elo gap implies, untrained.
     elo_prob = elo_expected_score(test["HOME_TEAM_ELO"], test["AWAY_TEAM_ELO"])
     elo_acc = accuracy_score(y_test, (elo_prob > 0.5).astype(int))
     elo_loss = log_loss(y_test, elo_prob)
     print(f"Elo win probability  accuracy {elo_acc:.4f}  log loss {elo_loss:.4f}")
     results.append(("Moneyline", "Elo win probability", [("Accuracy", elo_acc), ("Log loss", elo_loss)]))
 
-    # Tier 3 - simple ML.
+    # Tier 3: simple ML.
     model = LogisticRegression(max_iter=1000)
     model.fit(x_train, y_train)
     proba = model.predict_proba(x_test)[:, 1]
@@ -226,10 +209,9 @@ def evaluate_moneyline(train, test, x_train, x_test) -> list:
 
 
 def naive_prediction(test: pd.DataFrame, stat: str, combine: str) -> pd.Series:
-    """Each team's own recent scoring/rebounding/assist average, combined.
+    """Each team's own ROLL10 average, differenced or summed.
 
-    Varies per matchup rather than being one flat league-wide constant,
-    which makes it a genuinely harder baseline for the model to beat.
+    Varies per matchup instead of being one league-wide constant.
     """
     home, away = test[f"HOME_ROLL10_{stat}"], test[f"AWAY_ROLL10_{stat}"]
     return home - away if combine == "diff" else home + away
@@ -273,8 +255,8 @@ def print_summary(results: list, test_seasons: list, test_rows: int) -> None:
         cells += ["-"] * (2 - len(cells))
         rows.append((target, method, cells[0], cells[1]))
 
-    # Second metric column is unlabelled — each cell names its own metric,
-    # since they differ between classification and regression targets.
+    # Second metric column has no header: each cell names its own metric,
+    # which differs between classification and regression.
     headers = ("TARGET", "METHOD", "METRIC", "")
     widths = [max(len(str(r[i])) for r in (*rows, headers)) for i in range(4)]
 
@@ -284,7 +266,6 @@ def print_summary(results: list, test_seasons: list, test_rows: int) -> None:
 
     previous_target = None
     for row in rows:
-        # Blank line between targets so the tiers group visually.
         if previous_target is not None and row[0] != previous_target:
             print()
         previous_target = row[0]

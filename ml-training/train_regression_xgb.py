@@ -1,35 +1,25 @@
 """
-XGBoost across all six regression targets, to answer one question: is the
-moneyline information-ceiling result a property of that target alone, or of
-the whole feature set?
+XGBoost across the six regression targets.
 
 Input:  data-pipeline/data/processed/model_dataset.csv
 Output: one MLflow experiment per target under ml-training/mlruns.
 
-The six targets share everything except the y column and the shape of their
-naive baseline, so they run through a single parameterized function rather
-than six near-identical scripts. The split and MLflow wiring come from
-common.py, and the feature set from train_baseline.py, rather than being
-restated here — every model has to split identically or its numbers stop
-being comparable to the rest.
+The targets differ only in the y column and the naive baseline formula, so
+one parameterized function handles all six. Split and MLflow wiring come
+from common.py, feature set from train_baseline.py.
 
-BASELINES ARE RECOMPUTED HERE, not transcribed from train_baseline.py. A
-hardcoded number stays convincing after the thing it described has changed;
-a recomputed one cannot.
+Baselines are recomputed here rather than copied from train_baseline.py, so
+a change in data prep shows up instead of being papered over.
 
-FAIRNESS OF THE COMPARISON: LinearRegression is fit on train+validation
-(2015-2023) while XGBoost fits on train (2015-2022) and spends validation
-(2023) on deciding when to stop. That is deliberate — each model consumes
-exactly the same span of history, in the manner its algorithm requires.
-LinearRegression has no hyperparameters to stop early on, so withholding a
-season from it would handicap it for no reason, and would also break the
-reproduction of train_baseline.py's published numbers.
+LinearRegression is fit on train+validation (2015-2023); XGBoost fits on
+train (2015-2022) and uses validation (2023) for early stopping. Both see
+the same span of history. LinearRegression has nothing to stop early on, so
+withholding a season would only handicap it.
 
-SCORING SETS: the naive and linear baselines cannot score early-season rows
-at all — the naive formula IS the rolling columns, and LinearRegression
-rejects NaN. So the three-way table is scored on the complete-window games
-only. XGBoost's full-test-set number is reported separately, and has no
-counterpart to compare against.
+The naive and linear baselines can't score early-season rows at all (the
+naive formula is the rolling columns, and LinearRegression rejects NaN), so
+the table uses complete-window games. XGBoost's full-test number is
+reported separately with no counterpart.
 """
 
 import numpy as np
@@ -53,7 +43,7 @@ from train_baseline import (
     section,
 )
 
-# Same shape as the moneyline params, retargeted at a continuous outcome.
+# Same as the moneyline params, retargeted at a continuous outcome.
 PARAMS = {
     "objective": "reg:squarederror",
     "eval_metric": "rmse",
@@ -68,14 +58,13 @@ PARAMS = {
     "random_state": 42,
 }
 
-# Below this, a difference in MAE is not worth acting on: it is smaller than
-# the gap between reasonable hyperparameter choices, so it says nothing about
-# whether the model class is actually better suited to the target.
+# Smaller MAE differences than this are within the noise between reasonable
+# hyperparameter choices, so they say nothing about the model class.
 IMPROVEMENT_THRESHOLD_PCT = 3.0
 
 
 def experiment_name(label: str) -> str:
-    """'REB margin' -> 'reb_margin', matching the 'moneyline' convention."""
+    """'REB margin' -> 'reb_margin'."""
     return label.lower().replace(" ", "_")
 
 
@@ -87,10 +76,10 @@ def score(y_true, predictions) -> tuple:
 
 
 def fit_linear_baseline(train, validation, test, target: str):
-    """Reproduce train_baseline.py's LinearRegression on this target.
+    """Reproduce train_baseline.py's LinearRegression for this target.
 
-    NaN rows dropped and features standardized with the scaler fit on the
-    fitting set only — both required by the model, neither by XGBoost.
+    NaN rows dropped and features scaled because this model requires it;
+    XGBoost needs neither.
     """
     fit_set = pd.concat([train, validation]).dropna(subset=ROLLING_FEATURE_COLUMNS)
 
@@ -127,8 +116,7 @@ def run_target(target, label, stat, combine, train, validation, test, test_compa
     xgb_mae, xgb_rmse = score(y_comparable, model.predict(test_comparable[FEATURE_COLUMNS]))
     full_mae, full_rmse = score(test[target], model.predict(test[FEATURE_COLUMNS]))
 
-    # Negative = XGBoost beat LinearRegression. One convention everywhere,
-    # in the table and in the verdict, so the signs never have to be re-read.
+    # Negative = XGBoost better. Same sign convention in table and verdict.
     change_pct = (xgb_mae - linear_mae) / linear_mae * 100
     improved = change_pct < -IMPROVEMENT_THRESHOLD_PCT
 

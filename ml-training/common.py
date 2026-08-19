@@ -1,46 +1,31 @@
 """
-Shared infrastructure for the model training scripts.
+Shared code for the training scripts and the inference service.
 
-Anything two or more training scripts need lives here, so that they depend
-on this module rather than on each other. Before this existed, the
-regression script imported its split from the moneyline script — which
-worked, but implied a relationship between the two models that doesn't
-exist, and would have gotten worse with every script added.
-
-The chronological split especially belongs here rather than in any one
-script. A future quarter-score or player-prop model that split even
-slightly differently would produce numbers that look comparable to the
-existing ones without being comparable at all, and nothing in the output
-would reveal it.
+Lives here so scripts depend on this module instead of importing each other.
 """
 
 from pathlib import Path
 
-# NOTE: mlflow is imported inside setup_mlflow() rather than here on purpose.
-# The inference service imports this module for FEATURE_COLUMNS and never
-# tracks an experiment, and mlflow drags in Flask, SQLAlchemy and a large
-# dependency tree that has no business in a serving container.
+# mlflow is imported inside setup_mlflow(), not here: the inference service
+# imports this module for FEATURE_COLUMNS and would otherwise pull in
+# mlflow's whole dependency tree.
 
-# Split boundaries. Train is "everything before validation" rather than a
-# literal range, so extending the dataset backwards grows training instead
-# of silently reclassifying seasons.
+# Train is everything before VALIDATION_SEASON, so adding older seasons
+# grows training rather than reclassifying existing ones.
 VALIDATION_SEASON = 2023
 TEST_SEASONS = (2024, 2025)
 
-# MLflow 3.x refuses the plain-directory ("file store") backend, which is in
-# maintenance mode, so tracking goes to SQLite. Both the database and the
-# artifacts live under ml-training/mlruns/, which .gitignore already covers.
+# MLflow 3.x rejects the plain-directory backend, so tracking uses SQLite.
+# Both the db and artifacts sit under ml-training/mlruns/ (gitignored).
 TRACKING_DIR = Path(__file__).resolve().parent / "mlruns"
 TRACKING_URI = f"sqlite:///{(TRACKING_DIR / 'mlflow.db').as_posix()}"
 ARTIFACT_URI = (TRACKING_DIR / "artifacts").as_uri()
 
 
-# The 17 pre-game features available for each side. model_dataset.csv carries
-# each one twice, prefixed HOME_ and AWAY_, for 34 model inputs in total.
-#
-# ORDER IS PART OF THE CONTRACT. The saved models store these names and
-# validate against them at predict time, so anything assembling a feature
-# vector for inference must build it in exactly this order.
+# The 17 pre-game features per team. model_dataset.csv holds each twice,
+# prefixed HOME_ and AWAY_, giving 34 model inputs.
+# Order matters: the saved models store these names and check them at
+# predict time, so inference must build the row in this order.
 PER_SIDE_FEATURES = [
     "ROLL5_WIN_PCT",
     "ROLL5_PTS",
@@ -69,16 +54,11 @@ ROLLING_FEATURE_COLUMNS = [c for c in FEATURE_COLUMNS if "ROLL5_" in c or "ROLL1
 def setup_mlflow(experiment_name: str):
     """Point MLflow at the SQLite store, creating the experiment if needed.
 
-    The experiment name is required rather than defaulted: a shared helper
-    defaulting to one particular model's experiment is how runs end up
-    logged somewhere nobody intended.
-
-    Artifact location can only be set at creation time, so this has to go
-    through create_experiment rather than set_experiment. Runs nest under
-    the shared root by their own unique id, so experiments can share one
-    artifact root without colliding.
+    Name is required, not defaulted, so runs can't land in the wrong
+    experiment. Artifact location can only be set at creation time, hence
+    create_experiment rather than set_experiment.
     """
-    import mlflow  # deferred: see the note at the top of this module
+    import mlflow  # deferred, see note at top of module
 
     TRACKING_DIR.mkdir(parents=True, exist_ok=True)
     mlflow.set_tracking_uri(TRACKING_URI)
@@ -91,10 +71,8 @@ def setup_mlflow(experiment_name: str):
 def split_three_way(df):
     """Chronological train / validation / test split by season.
 
-    Validation exists so a model can decide when to stop training without
-    ever touching the test set — doing that on test would quietly turn it
-    into a training signal, and the reported number would become optimistic
-    in a way nothing downstream could detect.
+    Validation is what early stopping measures against. Using test for that
+    would turn it into a training signal and inflate the reported score.
     """
     train = df[df["SEASON"] < VALIDATION_SEASON]
     validation = df[df["SEASON"] == VALIDATION_SEASON]

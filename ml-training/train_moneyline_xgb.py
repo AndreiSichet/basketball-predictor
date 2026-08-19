@@ -1,35 +1,25 @@
 """
-XGBoost moneyline model — the first model expected to beat the baselines.
+XGBoost moneyline model.
 
 Input:  data-pipeline/data/processed/model_dataset.csv
-Output: an MLflow run under ml-training/mlruns (params, metrics, model artifact).
+Output: an MLflow run under ml-training/mlruns (params, metrics, model).
 
-Three things differ from train_baseline.py, each deliberately:
+Three differences from train_baseline.py:
 
-  1. THREE-WAY chronological split. The baseline used train/test; this adds a
-     validation season between them. Early stopping needs a set to measure
-     "stopped improving" against, and using the test set for that would
-     quietly turn it into a training signal — the reported test number would
-     become optimistic in a way nothing downstream could detect.
+  1. Three-way split. Early stopping needs a validation set; using test for
+     that would turn it into a training signal and inflate the result.
 
-  2. NO row dropping. XGBoost handles NaN natively (it learns a default
-     branch direction at each split), so the early-season rows the baseline
-     was forced to discard are kept here — about 1,400 extra training games.
-     Measured, this buys very little: training with the rows dropped instead
-     scores 0.6763/0.6088 against 0.6754/0.6067 with them kept, i.e. a wash
-     within noise. The capability is real; the payoff on this dataset is not.
-     Worth re-measuring if the feature set grows.
+  2. No row dropping. XGBoost handles NaN natively, so the ~1,400
+     early-season rows the baseline dropped are kept. Measured, this is a
+     wash: dropping them scores 0.6763/0.6088 vs 0.6754/0.6067 keeping them.
+     Re-measure if the feature set grows.
 
-  3. NO scaling. Trees split on thresholds within a single feature, so
-     monotonic rescaling cannot change which splits get chosen. The
-     StandardScaler the baseline needed would be inert here.
+  3. No scaling. Trees split on thresholds within one feature, so rescaling
+     can't change which splits are chosen.
 
-TEST-SET NOTE: the test set is deliberately restricted to the same
-complete-window games the baseline scored on. Scoring the extra early-season
-rows here would make the headline number incomparable to the baselines this
-script exists to beat — a different, harder set of games. The unrestricted
-test set is reported separately, since that one reflects real deployment,
-where early-season games still have to be predicted.
+Test set is restricted to the same complete-window games the baseline
+scored on, so the headline number stays comparable. The full test set is
+reported separately as the deployment-realistic number.
 """
 
 import mlflow
@@ -46,9 +36,8 @@ from common import (
     split_three_way,
 )
 
-# Shared with the baseline rather than re-declared: the 34-column feature
-# list and the loader's column-drift guard must agree across both scripts,
-# and duplicating them is how they would silently stop agreeing.
+# Imported, not re-declared: the feature list and the loader's drift guard
+# must stay identical across scripts.
 from train_baseline import (
     FEATURE_COLUMNS,
     ROLLING_FEATURE_COLUMNS,
@@ -59,10 +48,9 @@ from train_baseline import (
 TARGET = "HOME_WIN"
 EXPERIMENT_NAME = "moneyline"
 
-# n_estimators is an upper bound, not a target — early stopping picks the
-# real count. Depth is kept shallow and sampling aggressive because the
-# signal here is weak (the baselines top out near 68% accuracy) and this
-# dataset is small enough for a deep model to memorize rather than learn.
+# n_estimators is an upper bound; early stopping picks the real count.
+# Shallow depth and heavy subsampling because the signal is weak and the
+# dataset is small enough for a deep model to memorize it.
 PARAMS = {
     "objective": "binary:logistic",
     "eval_metric": "logloss",
@@ -73,14 +61,12 @@ PARAMS = {
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "reg_lambda": 1.0,
-    # xgboost >= 2.0 takes this on the constructor; .fit() no longer accepts
-    # it. eval_set is still passed to .fit() below.
+    # xgboost >= 2.0 takes this on the constructor, not .fit().
     "early_stopping_rounds": 50,
     "random_state": 42,
 }
 
-# Transcribed from train_baseline.py on the identical test set — NOT
-# recomputed here. If that script's numbers move, update these.
+# Copied from train_baseline.py on the same test set. Update if those move.
 BASELINES = [
     ("Naive: always home", 0.5458, None),
     ("Elo win probability", 0.6674, 0.6130),
@@ -90,7 +76,7 @@ REFERENCE_METHOD = "LogisticRegression"
 
 
 def report_retained_rows(train, validation):
-    """Quantify advantage #2: rows the baseline dropped that XGBoost keeps."""
+    """Count the incomplete-window rows the baseline dropped and this keeps."""
     kept = 0
     for name, split in (("train", train), ("validation", validation)):
         incomplete = split[ROLLING_FEATURE_COLUMNS].isna().any(axis=1).sum()
@@ -139,8 +125,7 @@ def main():
     train, validation, test = split_three_way(df)
     report_retained_rows(train, validation)
 
-    # Scored on exactly the rows the baseline scored on, so the headline
-    # number stays comparable. See TEST-SET NOTE in the module docstring.
+    # Same rows the baseline scored on, so the comparison holds.
     test_comparable = test.dropna(subset=ROLLING_FEATURE_COLUMNS)
     print(
         f"\nScoring on {len(test_comparable)} complete-window test games "

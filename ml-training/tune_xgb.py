@@ -1,33 +1,26 @@
 """
-A deliberately small hyperparameter grid, run to test one specific claim.
+Small hyperparameter grid, run to test whether tuning moves anything.
 
 Input:  data-pipeline/data/processed/model_dataset.csv
-Output: one tuned MLflow run appended to each target's existing experiment.
+Output: one tuned MLflow run added to each target's existing experiment.
 
-THE CLAIM UNDER TEST: after XGBoost failed to beat a linear model on all
-seven targets, the conclusion drawn was that this is an information ceiling
-in the feature set, not a modelling ceiling — and therefore that tuning
-would move the numbers by fractions of a percent. That conclusion is load
-bearing: it is the reason to go collect new features instead of tuning. It
-should not be taken on trust just because it sounds reasonable.
+XGBoost failed to beat a linear model on all seven targets, which suggested
+an information ceiling in the features rather than a modelling one. That
+conclusion decides whether to collect new features or keep tuning, so it
+gets checked rather than assumed.
 
-So: a 2x2 grid (max_depth in {3, 6} x learning_rate in {0.05, 0.1}) across
-all seven targets. This is not a real search and is not meant to be. It is
-sized to be decisive in one direction only — if four configs spanning
-shallow-to-deep and slow-to-fast move nothing, a larger sweep over the same
-features is very unlikely to. If something does move, that is the signal to
-spend real time on a proper search.
+The grid is 2x2 (max_depth 3/6 x learning_rate 0.05/0.1) across seven
+targets. It is not a full search. It is sized so that if four configs
+spanning shallow-to-deep and slow-to-fast move nothing, a bigger sweep over
+the same features probably won't either.
 
-FIT COUNT: 35, not 28. The grid is 7 x 4, but each target also refits the
-original hand-picked config (max_depth=4, learning_rate=0.05, which is not
-a grid point) so that "delta vs original" is measured inside this process
-on this data, rather than transcribed from an earlier terminal. The same
-reasoning applies to the linear baselines, which are refit here too.
+35 fits, not 28: each target also refits the original config (max_depth=4,
+learning_rate=0.05, not a grid point) so "delta vs original" is measured
+here rather than copied from an earlier run. Linear baselines are refit for
+the same reason.
 
-SELECTION IS ON VALIDATION, NEVER TEST. The whole point of holding out a
-validation season is that the config can be chosen without consulting the
-test set. Picking the config with the best test score would produce a
-number that is guaranteed to look good and guaranteed to mean nothing.
+Configs are selected on validation, never test. Picking by test score would
+guarantee a good-looking number that means nothing.
 """
 
 from dataclasses import dataclass
@@ -54,10 +47,8 @@ from train_baseline import (
     section,
 )
 
-# Unlike the split logic that was pulled into common.py, these genuinely
-# belong to the scripts they come from: this script's job is to compare
-# against the configs those two scripts actually use, so it should point at
-# them rather than keep a copy that can quietly fall out of date.
+# Imported from the training scripts on purpose: this script compares
+# against the configs they actually use.
 from train_moneyline_xgb import EXPERIMENT_NAME as MONEYLINE_EXPERIMENT
 from train_moneyline_xgb import PARAMS as MONEYLINE_PARAMS
 from train_moneyline_xgb import TARGET as MONEYLINE_TARGET
@@ -79,17 +70,16 @@ class Task:
     label: str        # display name, e.g. "REB margin"
     target: str       # y column in model_dataset.csv
     classification: bool
-    stat: str = ""    # ROLL10 stat behind the naive baseline (regression only)
+    stat: str = ""    # ROLL10 stat for the naive baseline (regression only)
     combine: str = ""  # "diff" or "sum" (regression only)
 
     @property
     def primary_metric(self) -> str:
-        """The metric every comparison in this script is measured on.
+        """Metric every comparison here uses.
 
-        Log loss rather than accuracy for moneyline: accuracy over 2,138
-        games moves in steps of ~0.05%, far too coarse to detect the small
-        effects this grid is looking for, and it throws away confidence
-        information the model does produce.
+        Log loss for moneyline, not accuracy: accuracy over 2,138 games
+        moves in ~0.05% steps, too coarse for the differences this grid is
+        looking for.
         """
         return "log loss" if self.classification else "MAE"
 
@@ -129,9 +119,8 @@ def base_params(task: Task) -> dict:
 def fit_xgb(task: Task, params: dict, train, validation):
     """Fit with early stopping against the validation season.
 
-    Both estimators report best_score as the eval_metric they were given
-    (logloss / rmse), and both are lower-is-better, so config selection is
-    a plain minimum in either case.
+    best_score is the eval_metric given (logloss / rmse); both are
+    lower-is-better, so selection is a plain minimum either way.
     """
     estimator = XGBClassifier if task.classification else XGBRegressor
     model = estimator(**params)
@@ -159,10 +148,8 @@ def score_model(task: Task, model, split) -> tuple:
 def fit_linear_family_baseline(task: Task, train, validation, test) -> tuple:
     """Refit the linear baseline this target was originally measured against.
 
-    Fit on train+validation (2015-2023), matching train_baseline.py: a model
-    with no hyperparameters has nothing to stop early on, so withholding the
-    validation season would handicap it for no reason. NaN rows dropped and
-    features standardized because these models require it — XGBoost does not.
+    Fit on train+validation (2015-2023), matching train_baseline.py. NaN
+    rows dropped and features scaled because these models require it.
     """
     fit_set = pd.concat([train, validation]).dropna(subset=ROLLING_FEATURE_COLUMNS)
 
@@ -185,11 +172,10 @@ def fit_linear_family_baseline(task: Task, train, validation, test) -> tuple:
 
 
 def naive_scores(task: Task, test) -> tuple:
-    """The untrained baseline, which differs in kind between task types.
+    """Untrained baseline. Differs in kind between task types.
 
-    Moneyline's naive tier predicts a hard "home wins", which has no
-    meaningful log loss (a confident wrong call is infinitely penalised),
-    so only its accuracy is reported.
+    Moneyline's naive tier predicts a hard "home wins", which has no usable
+    log loss, so only accuracy is returned.
     """
     y = test[task.target]
     if task.classification:
@@ -208,7 +194,7 @@ def relative_change(new: float, reference: float) -> float:
 
 
 def run_grid(task: Task, train, validation):
-    """Fit all four configs, returning them ranked best-validation-first."""
+    """Fit all four configs, best validation score first."""
     results = []
     for depth, rate in product(GRID["max_depth"], GRID["learning_rate"]):
         params = {**base_params(task), "max_depth": depth, "learning_rate": rate}

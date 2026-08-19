@@ -3,20 +3,17 @@ Reshape games_final.csv from one-row-per-team-per-game into one-row-per-game,
 with home and away features side by side and a single win/loss label.
 
 Input:  data-pipeline/data/processed/games_final.csv
-Output: data-pipeline/data/processed/model_dataset.csv — the model-ready table.
+Output: data-pipeline/data/processed/model_dataset.csv
 
-Early-season NaN rows (incomplete rolling windows) are left as-is; whether
-to drop/impute them belongs to the training phase, not here.
+Early-season NaN rows (incomplete rolling windows) are left as-is. Whether
+to drop or impute them is a training decision, not a pipeline one.
 
-IMPORTANT — features vs. labels:
-  Everything derived from WL, PTS, REB and AST is a POST-GAME OUTCOME.
-  Those columns exist only as prediction targets and MUST be excluded from
-  any training feature matrix — feeding them in as inputs would leak the
-  answer. See LABEL_COLUMNS below for the authoritative list.
+Features vs labels: anything derived from WL, PTS, REB or AST is a
+post-game outcome and must be kept out of the feature matrix, or it leaks
+the answer. LABEL_COLUMNS below is the authoritative list.
 
-  Note the ROLL5_/ROLL10_ versions of REB and AST are a different thing
-  entirely: those are trailing averages of PRIOR games and remain legitimate
-  features. Only the raw single-game values are off-limits.
+The ROLL5_/ROLL10_ versions of REB and AST are different: those average
+prior games and are valid features. Only the raw single-game values are not.
 """
 
 from pathlib import Path
@@ -27,21 +24,19 @@ PROCESSED_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "processed"
 INPUT_PATH = PROCESSED_DATA_DIR / "games_final.csv"
 OUTPUT_PATH = PROCESSED_DATA_DIR / "model_dataset.csv"
 
-# Known strictly before tip-off — safe to train on.
+# Known before tip-off, safe to train on.
 PREGAME_FEATURE_COLUMNS = ["REST_DAYS", "IS_BACK_TO_BACK", "TEAM_ELO"]
 
-# Known only after the final buzzer. Carried through here to build targets;
-# never to be used as model inputs.
+# Known only after the game. Carried through to build targets, never inputs.
 POSTGAME_OUTCOME_COLUMNS = ["WL", "PTS", "REB", "AST"]
 
-# Identifiers — not features, not labels.
+# Identifiers: not features, not labels.
 ID_COLUMNS = ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME"]
 
-# Columns that are properties of the game itself (identical on the home and
-# away row) and so are kept unprefixed rather than split into HOME_/AWAY_.
+# Identical on both team rows, so kept unprefixed instead of HOME_/AWAY_.
 GAME_LEVEL_COLUMNS = ["GAME_ID", "GAME_DATE"]
 
-# The label columns present in the saved dataset. Drop these from X when training.
+# Labels in the saved dataset. Drop these from X when training.
 LABEL_COLUMNS = [
     "HOME_WIN",
     "HOME_PTS",
@@ -80,9 +75,8 @@ def main():
 
     merged = home.merge(away, on=GAME_LEVEL_COLUMNS, how="inner", validate="one_to_one")
 
-    # --- Labels (post-game outcomes) -------------------------------------
-    # HOME_PTS/AWAY_PTS are kept for debugging and for comparing actual
-    # totals against over/under lines once odds data is sourced.
+    # Labels. HOME_PTS/AWAY_PTS stay for debugging and for checking actual
+    # totals against over/under lines once odds data exists.
     merged["HOME_WIN"] = (merged["HOME_WL"] == "W").astype(int)
     merged["HOME_MARGIN"] = merged["HOME_PTS"] - merged["AWAY_PTS"]
     merged["TOTAL_PTS"] = merged["HOME_PTS"] + merged["AWAY_PTS"]
@@ -91,7 +85,6 @@ def main():
     merged["AST_MARGIN"] = merged["HOME_AST"] - merged["AWAY_AST"]
     merged["TOTAL_AST"] = merged["HOME_AST"] + merged["AWAY_AST"]
     merged = merged.drop(columns=["HOME_WL", "AWAY_WL"])
-    # ---------------------------------------------------------------------
 
     merged.to_csv(OUTPUT_PATH, index=False)
 
