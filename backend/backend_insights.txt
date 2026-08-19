@@ -1,0 +1,1366 @@
+===============================================================================
+BACKEND INSIGHTS
+Basketball Predictor - Spring Boot backend
+Written: 19 August 2026
+===============================================================================
+
+WHO THIS DOCUMENT IS FOR
+------------------------
+Anyone who needs to understand this backend without already knowing the
+project, and without necessarily being a programmer. Every technical term is
+explained the first time it appears, and there is a glossary in section 3.
+
+After reading this you should be able to explain: what was built, why each
+piece exists, how the pieces talk to each other, how to run it, and how to
+prove it works.
+
+
+===============================================================================
+TABLE OF CONTENTS
+===============================================================================
+
+  1.  THE PROJECT IN ONE PAGE
+  2.  THE FOUR PARTS OF THE SYSTEM
+  3.  GLOSSARY OF TERMS
+  4.  WHAT WAS BUILT TODAY
+  5.  THE DATABASE
+  6.  EVERY FILE, EXPLAINED ONE BY ONE
+  7.  HOW A REQUEST TRAVELS THROUGH THE SYSTEM
+  8.  THE THREE ENDPOINTS (exact contracts)
+  9.  HOW TO RUN EVERYTHING
+  10. HOW TO TEST EVERYTHING
+  11. PROBLEMS FOUND AND FIXED TODAY
+  12. DESIGN DECISIONS AND WHY
+  13. KNOWN LIMITATIONS AND WHAT COMES NEXT
+  14. QUICK REFERENCE CHEAT SHEET
+
+
+===============================================================================
+1. THE PROJECT IN ONE PAGE
+===============================================================================
+
+The goal of the whole project is to predict the outcome of NBA basketball
+games before they are played.
+
+Seven separate things are predicted for each game:
+
+  1. Moneyline      - the probability that the home team wins (0 to 1)
+  2. Spread         - by how many points the home team wins or loses
+  3. Totals         - the combined points scored by both teams
+  4. Rebound margin - home team rebounds minus away team rebounds
+  5. Rebound total  - combined rebounds
+  6. Assist margin  - home team assists minus away team assists
+  7. Assist total   - combined assists
+
+The predictions come from machine-learning models trained on eleven seasons
+of real NBA game data (about 13,200 games from the 2015-16 season through
+2025-26).
+
+This document covers the BACKEND: the part written in Java that sits between
+the machine-learning models and the (not yet built) website. Its job is to
+take a request like "predict Boston at home against Atlanta on 13 April",
+get the numbers from the models, save them permanently in a database, and
+hand them back.
+
+
+===============================================================================
+2. THE FOUR PARTS OF THE SYSTEM
+===============================================================================
+
+The project has four folders, each a separate program. They run
+independently and talk over the network or through shared files.
+
+    +-------------------+
+    |  data-pipeline    |  Python. Downloads raw NBA game results and
+    |                   |  turns them into clean tables. Calculates
+    |                   |  "features" - the inputs the models learn from,
+    |                   |  such as a team's scoring average over its last
+    |                   |  10 games, days of rest, and Elo rating.
+    +-------------------+
+             |
+             |  writes CSV files (spreadsheet-like text files)
+             v
+    +-------------------+
+    |  ml-training      |  Python. Trains the seven models on those CSVs
+    |                   |  and saves them as seven .json model files.
+    |                   |  Also contains live_features.py, which can build
+    |                   |  the model inputs for a single upcoming game.
+    +-------------------+
+             |
+             |  saves 7 trained models to ml-training/models/
+             v
+    +-------------------+
+    | inference-service |  Python (FastAPI). A small web service on
+    |                   |  port 8000. Loads the seven models into memory
+    |                   |  once at startup. Given two team IDs and a date,
+    |                   |  it builds the features and returns the seven
+    |                   |  predictions as JSON.
+    +-------------------+
+             |
+             |  HTTP (a network call), JSON in and JSON out
+             v
+    +-------------------+
+    |  backend          |  Java (Spring Boot). A web service on port 8080.
+    |  <-- THIS ONE     |  Calls the inference service, stores results in
+    |                   |  a PostgreSQL database, and exposes a clean API
+    |                   |  for a website to consume.
+    +-------------------+
+             |
+             |  HTTP, JSON
+             v
+    +-------------------+
+    |  frontend         |  Not built yet. Will be the website people use.
+    +-------------------+
+
+WHY SPLIT IT UP LIKE THIS?
+Each part can be worked on, restarted, or replaced without touching the
+others. The models can be retrained without stopping the backend. The
+website can be rewritten without touching the models. It also means each
+part uses the language best suited to it: Python for machine learning,
+Java for a reliable business-logic and database layer.
+
+IMPORTANT: the backend cannot predict anything by itself. If the inference
+service on port 8000 is not running, prediction requests will fail. This is
+by design, not a bug.
+
+
+===============================================================================
+3. GLOSSARY OF TERMS
+===============================================================================
+
+Read this section if any word below is unfamiliar. Everything later in the
+document assumes these.
+
+API
+    "Application Programming Interface". A set of addresses (URLs) that
+    another program can call to ask for data or to make something happen.
+    Unlike a website, the answer is data, not a page to look at.
+
+ENDPOINT
+    One specific address in an API. For example GET /api/teams is an
+    endpoint that returns the list of teams.
+
+HTTP / GET / POST
+    HTTP is the language programs use to talk over the web. GET means "give
+    me some data, change nothing". POST means "here is some data, create
+    something with it". Our backend has two GETs and one POST.
+
+HTTP STATUS CODE
+    A three-digit number in every response saying how it went.
+      200 = success
+      400 = you sent something wrong (your fault)
+      404 = not found
+      500 = the server broke (our fault)
+      503 = a service we depend on is unavailable
+    Distinguishing 400 from 500 matters: a 400 tells the caller to fix their
+    request, a 500 tells them to report a bug.
+
+JSON
+    A plain-text way of writing structured data, understood by nearly every
+    language. Example:
+        { "id": 1610612737, "name": "Atlanta Hawks", "abbreviation": "ATL" }
+
+DATABASE / POSTGRESQL / TABLE / ROW / COLUMN
+    A database stores information permanently on disk. PostgreSQL (often
+    "Postgres") is the database program used here. Data lives in TABLES,
+    which are like spreadsheets: COLUMNS are the fields (name, date), ROWS
+    are the individual records.
+
+PRIMARY KEY
+    The column that uniquely identifies a row in a table. No two rows may
+    share one.
+
+FOREIGN KEY
+    A column that points at a row in another table. Our "game" table has a
+    home_team_id column that points at a row in the "team" table. The
+    database refuses to store a game whose team does not exist, which is how
+    it keeps the data honest.
+
+ENTITY
+    A Java class that mirrors one database table. One object in memory = one
+    row in the table. We have three: Team, Game, Prediction.
+
+ORM / JPA / HIBERNATE
+    "Object-Relational Mapping" - technology that automatically translates
+    between Java objects and database rows, so nobody has to write the
+    database commands by hand. JPA is the standard; Hibernate is the
+    implementation Spring Boot uses.
+
+REPOSITORY
+    An interface listing the database questions we want to ask. Spring
+    writes the actual code for us. Remarkably, if you declare a method named
+    findByPlayedFalseOrderByGameDateAsc(), Spring reads that NAME and
+    generates a query for "games that are not played, sorted by date". No
+    code is written by hand.
+
+SERVICE
+    A class holding business logic - the actual decision-making steps.
+    Sits between the controller and the repositories.
+
+CONTROLLER
+    The class that receives web requests and returns responses. It maps a
+    URL to a piece of code.
+
+DTO ("Data Transfer Object")
+    A simple object built purely to be sent over the network. It is
+    deliberately separate from the entity. The entity is shaped for the
+    database; the DTO is shaped for whoever is consuming the API. Keeping
+    them separate means changing the database does not automatically change
+    the public API, and vice versa.
+
+TRANSACTION
+    A group of database changes treated as one all-or-nothing unit. Either
+    every change happens or none does. Prevents half-finished states, such
+    as a game being saved but its prediction not.
+
+LAZY LOADING
+    When a Game is loaded, its two Teams are NOT fetched from the database
+    immediately. A placeholder is put there instead, and the real data is
+    fetched only if someone actually asks for it. This avoids wasted work.
+    The catch: the fetch only works while the database session is still
+    open. Ask too late and you get an error (see section 11).
+
+SPRING BOOT
+    The Java framework doing the heavy lifting: starting a web server,
+    connecting to the database, converting Java objects to JSON, and
+    wiring classes together.
+
+MAVEN / pom.xml
+    Maven is the build tool that compiles the Java code and downloads
+    libraries. pom.xml is its configuration file, listing what the project
+    depends on.
+
+LOMBOK
+    A library that generates repetitive Java code automatically. Writing
+    @Data on a class makes Lombok generate all the "get this field" and
+    "set this field" methods invisibly, keeping the file short.
+
+
+===============================================================================
+4. WHAT WAS BUILT TODAY
+===============================================================================
+
+Starting point: an empty Spring Boot project with a database connection
+configured but no code, and an empty database.
+
+Finished state: a working API with three endpoints, three database tables,
+all 30 NBA teams loaded, and every path tested end to end.
+
+Built, in order:
+
+  A. Three ENTITIES (Team, Game, Prediction) - the database structure.
+  B. Three REPOSITORIES - the database queries.
+  C. A temporary check that saving to the database really worked.
+  D. A one-off loader that inserted all 30 NBA teams from the pipeline
+     data files. Deleted after it ran.
+  E. POST /api/predictions - the main endpoint. Calls the Python inference
+     service, saves the result, returns it.
+  F. GET /api/games/upcoming - lists games not yet played, each with its
+     most recent prediction.
+  G. GET /api/teams - lists all 30 teams.
+  H. Six DTOs for talking to the outside world.
+  I. Configuration changes and two real bug fixes (section 11).
+
+Two temporary pieces of scaffolding were written, used, and then deleted -
+they are not in the codebase and should not be looked for.
+
+
+===============================================================================
+5. THE DATABASE
+===============================================================================
+
+Database name: basketball_predictor
+Runs on:       localhost, port 5432 (the PostgreSQL default)
+Username:      postgres
+
+The tables are created AUTOMATICALLY by Hibernate from the Java entity
+classes when the application starts. Nobody wrote the table definitions by
+hand. This behaviour is controlled by the setting
+"spring.jpa.hibernate.ddl-auto=update" in application.properties.
+
+-------------------------------------------------------------------------------
+TABLE: team          (currently 30 rows - all NBA teams)
+-------------------------------------------------------------------------------
+  COLUMN         TYPE     MEANING
+  id             bigint   The real NBA team ID, e.g. 1610612737 for Atlanta
+  name           text     "Atlanta Hawks"
+  abbreviation   text     "ATL"
+
+  The id is NOT auto-generated. The NBA already assigns every team a
+  permanent unique number, and the pipeline data uses those numbers. Reusing
+  them means a row here lines up with the data files with no translation
+  step. Inventing our own numbering would create a permanent mapping problem
+  for no benefit.
+
+-------------------------------------------------------------------------------
+TABLE: game          (currently empty)
+-------------------------------------------------------------------------------
+  COLUMN         TYPE     MEANING
+  id             bigint   Auto-generated by the database, 1, 2, 3...
+  nba_game_id    bigint   The official NBA game ID. NULL for now.
+  home_team_id   bigint   Foreign key -> team.id
+  away_team_id   bigint   Foreign key -> team.id
+  game_date      date     The day the game is played
+  played         boolean  false = upcoming, true = finished
+
+  Here the id IS auto-generated, unlike team. The reason: this app currently
+  creates games for matchups the user asks about, and those have no official
+  NBA ID because the app has no schedule feed yet. The nba_game_id column is
+  reserved for later, when a schedule feed exists - at which point real IDs
+  can be filled in without changing the table structure.
+
+  "played" is always false today. Nothing flips it yet; that will be the job
+  of a future pipeline step that notices a game has finished.
+
+-------------------------------------------------------------------------------
+TABLE: prediction    (currently empty)
+-------------------------------------------------------------------------------
+  COLUMN                 TYPE        MEANING
+  id                     bigint      Auto-generated
+  game_id                bigint      Foreign key -> game.id
+  home_win_probability   double      0.677 = 67.7% chance the home team wins
+  home_margin            double      +6.34 = home team wins by 6.34 points
+  total_points           double      229.4 combined points
+  rebound_margin         double      +1.15 rebounds
+  total_rebounds         double      87.8 combined rebounds
+  assist_margin          double      +1.48 assists
+  total_assists          double      51.1 combined assists
+  data_as_of             date        Newest game the models had seen
+  stale                  boolean     true if that data is out of date
+  predicted_at           timestamptz Exact moment this prediction was made
+
+  A game can have MANY predictions. Asking for the same matchup twice
+  creates a second prediction row against the same game. This is
+  intentional: predictions change as new results come in, and keeping the
+  history lets you see how a forecast moved over time. It is also why
+  "give me the latest one" needs an explicit sort by predicted_at.
+
+  WHY data_as_of AND stale ARE STORED
+  The models can only see games already processed by the pipeline. If the
+  pipeline has not run for a week, the predictions are computed from
+  week-old information. Nothing about the numbers themselves reveals this -
+  they look perfectly normal. So the inference service reports how fresh its
+  data was, and the backend saves that alongside the numbers rather than
+  discarding it. A prediction can therefore always be judged later on how
+  good its inputs were.
+
+RELATIONSHIP DIAGRAM
+
+      team                 game                  prediction
+      +--------+           +--------------+      +----------------+
+      | id     |<----------| home_team_id |<-----| game_id        |
+      | name   |<----+     | away_team_id |      | home_win_prob  |
+      | abbrev |     +-----|              |      | ...6 more...   |
+      +--------+           | game_date    |      | data_as_of     |
+                           | played       |      | stale          |
+                           +--------------+      | predicted_at   |
+                                                 +----------------+
+      one team has            one game has
+      many games              many predictions
+
+
+===============================================================================
+6. EVERY FILE, EXPLAINED ONE BY ONE
+===============================================================================
+
+All Java files live under:
+  backend/src/main/java/com/andreisichet/basketball_predictor/
+
+That long folder path is the "package" - a namespace that keeps this
+project's classes from colliding with any library's classes.
+
+-------------------------------------------------------------------------------
+6.1  CONFIGURATION FILES
+-------------------------------------------------------------------------------
+
+FILE: backend/pom.xml
+WHAT IT IS: the build file. Lists the project's libraries.
+
+  Key entries and why each is there:
+
+  spring-boot-starter-data-jpa
+      Database access. Brings in Hibernate.
+
+  spring-boot-starter-webmvc
+      The web server and URL handling.
+
+  spring-boot-starter-restclient
+      Lets this application CALL other web services (specifically, the
+      Python inference service). In Spring Boot 4 this is a separate
+      package; in Spring Boot 3 it came bundled with the web starter. It
+      had to be added explicitly or the application refuses to start.
+
+  postgresql
+      The driver that lets Java talk to PostgreSQL.
+
+  lombok
+      Generates the repetitive getter/setter code.
+
+  maven-compiler-plugin (with annotationProcessorPaths)
+      This block is unusual and worth understanding. From Java 23 onwards,
+      the compiler no longer automatically runs code generators it finds
+      among the libraries - a deliberate security-minded change. This
+      machine runs Java 25. Without naming Lombok explicitly in this block,
+      Lombok silently generates NOTHING, and compilation fails with
+      confusing errors like "constructor Team cannot be applied to given
+      types". The version number is deliberately omitted so it is inherited
+      from Spring Boot and can never drift out of sync.
+
+FILE: backend/src/main/resources/application.properties
+WHAT IT IS: settings, one per line. Changing these needs no code changes.
+
+  spring.datasource.url=jdbc:postgresql://localhost:5432/basketball_predictor
+      Where the database is.
+
+  spring.datasource.password=${DB_PASSWORD}
+      The password is NOT written here. ${DB_PASSWORD} means "read it from
+      an environment variable at startup". This keeps the password out of
+      the source code and out of version control. It also means the
+      application will not start unless DB_PASSWORD is set - see section 9.
+
+  spring.jpa.hibernate.ddl-auto=update
+      "Create or update the database tables automatically to match the Java
+      classes." Convenient during development. Its limits are explained in
+      section 13 - it can ADD things but never remove or alter them.
+
+  spring.jpa.open-in-view=false
+      Important. Explained fully in section 11.2. In short: it removes an
+      automatic safety net so that mistakes fail loudly and immediately
+      instead of working by luck.
+
+  inference.service.url=http://localhost:8000
+      Where the Python prediction service lives. Kept here rather than
+      hard-coded in the Java, so it can point somewhere else later without
+      recompiling.
+
+  spring.web.error.include-message=always
+      Makes error responses include a human-readable reason. Without it a
+      rejected request returns "400" with an empty body, and the caller
+      cannot tell whether the team was unknown or the date was refused.
+
+-------------------------------------------------------------------------------
+6.2  THE STARTUP FILE
+-------------------------------------------------------------------------------
+
+FILE: BasketballPredictorApplication.java
+WHAT IT DOES: starts the application. Twelve lines, no logic.
+
+  The single annotation @SpringBootApplication tells Spring: scan this
+  folder and everything under it, find all the controllers, services and
+  repositories, create them, and connect them to each other automatically.
+  This is why no file ever says "create a new PredictionService" - Spring
+  builds them and passes them where needed. That mechanism is called
+  "dependency injection".
+
+  NOTE: during today's work this file twice held temporary start-up code -
+  once to prove the database worked, once to load the 30 teams. Both were
+  deleted after use. The file is back to its original minimal form.
+
+-------------------------------------------------------------------------------
+6.3  THE ENTITIES  (folder: model/)
+-------------------------------------------------------------------------------
+
+These three classes define the database. Each field becomes a column.
+
+FILE: model/Team.java
+  Three fields: id, name, abbreviation.
+  @Entity  -> "this class is a database table"
+  @Id      -> "this field is the primary key"
+  Note the ABSENCE of @GeneratedValue: the NBA's own ID is used.
+  @Data / @NoArgsConstructor / @AllArgsConstructor are Lombok instructions
+  that generate the getters, setters, a toString, and two constructors.
+
+FILE: model/Game.java
+  Fields: id, nbaGameId, homeTeam, awayTeam, gameDate, played.
+
+  @GeneratedValue(strategy = GenerationType.IDENTITY)
+      "let the database assign the id automatically" (1, 2, 3...).
+
+  @ManyToOne(fetch = FetchType.LAZY)
+      "many games point at one team; do not load the team until asked".
+
+  @JoinColumn(name = "home_team_id")
+      "store that link in a column called home_team_id".
+
+FILE: model/Prediction.java
+  Fields: id, game, the seven prediction numbers, dataAsOf, stale,
+  predictedAt.
+
+  predictedAt uses the Java type "Instant", which represents an exact
+  moment in time independent of time zone. Postgres stores it as
+  "timestamp with time zone". This matters: if the server were ever moved
+  to a different time zone, or the clocks changed, the stored moments would
+  still be unambiguous. Using a plain date-and-time type would have
+  silently introduced that ambiguity.
+
+-------------------------------------------------------------------------------
+6.4  THE REPOSITORIES  (folder: repository/)
+-------------------------------------------------------------------------------
+
+These are INTERFACES - lists of method names with no code inside them.
+Spring generates the working implementation at startup by reading the
+method names. This is not a trick or shorthand; it is the standard way
+Spring Data works.
+
+Every repository automatically gets, for free: save, findById, findAll,
+count, delete, existsById, and more.
+
+FILE: repository/TeamRepository.java
+  Nothing custom. The built-in findAll() and findById() are all that is
+  needed.
+
+FILE: repository/GameRepository.java
+  findByPlayedFalseOrderByGameDateAsc()
+      Reads as: find games where played = false, ordered by game date
+      ascending. Used by the "upcoming games" endpoint.
+
+  findByHomeTeamAndAwayTeamAndGameDate(homeTeam, awayTeam, gameDate)
+      Finds an existing game for that exact matchup and date. Used so that
+      asking twice about the same fixture does not create two game rows.
+
+FILE: repository/PredictionRepository.java
+  findByGameId(gameId)
+      All predictions for a game.
+
+  findTopByGameIdOrderByPredictedAtDesc(gameId)
+      "Top" means "just the first one". Combined with "OrderBy predictedAt
+      Desc" (newest first), this returns the single most recent prediction
+      for a game. Used by the upcoming-games endpoint.
+
+-------------------------------------------------------------------------------
+6.5  THE DTOs  (folder: dto/)
+-------------------------------------------------------------------------------
+
+Six small classes describing data crossing a boundary. All are Java
+"records" - a compact form for simple, unchangeable data holders.
+
+Two of them describe the conversation with the PYTHON service:
+
+FILE: dto/InferenceRequest.java
+  What the backend SENDS to Python: home_team_id, away_team_id, game_date.
+
+  Python names fields with underscores (home_team_id); Java uses capitals
+  (homeTeamId). The @JsonProperty annotations state the mapping explicitly,
+  field by field. A global renaming rule was deliberately avoided, because
+  it would silently affect every other DTO in the project too.
+
+FILE: dto/InferenceResponse.java
+  What Python SENDS BACK: data_as_of, stale, days_behind, and a nested
+  "predictions" object holding the seven numbers. The Python service also
+  echoes back the team IDs and date; those are simply not declared here and
+  are ignored.
+
+Three describe what OUR API exposes to the outside world:
+
+FILE: dto/TeamDto.java
+  id, name, abbreviation.
+
+FILE: dto/PredictionDto.java
+  The seven numbers plus dataAsOf, stale, predictedAt.
+  Deliberately has NO id and NO link back to the game: it is always sent
+  nested inside the game it belongs to, so both would be clutter.
+
+FILE: dto/GameSummaryDto.java
+  id, homeTeamAbbreviation, awayTeamAbbreviation, gameDate, played, and
+  latestPrediction (which may be null).
+
+  latestPrediction is allowed to be null because a game can exist with no
+  predictions yet - which will become the normal case once a schedule feed
+  creates games in advance.
+
+One describes what OUR API receives:
+
+FILE: dto/PredictionRequest.java
+  homeTeamId, awayTeamId, gameDate. The body of a POST /api/predictions
+  request.
+
+WHY DTOs AT ALL, INSTEAD OF SENDING THE DATABASE OBJECTS?
+Three reasons.
+  1. Control. The database rows contain things the outside world does not
+     need. GameSummaryDto sends "BOS", not the whole team record.
+  2. Stability. Renaming a database column would otherwise instantly change
+     the public API and break the website.
+  3. Safety. Because of lazy loading (section 3), sending a database object
+     directly can fail at the moment of conversion to JSON. A DTO is plain
+     data with nothing left to load. See section 11.2 - this exact failure
+     happened today.
+
+-------------------------------------------------------------------------------
+6.6  THE SERVICES  (folder: service/)
+-------------------------------------------------------------------------------
+
+FILE: service/PredictionService.java
+WHAT IT DOES: the core logic of the application. Everything that happens
+when someone asks for a prediction.
+
+  Step by step, inside the predict() method:
+
+  1. Look up both teams by ID.
+     If either is missing, stop and return 400 with "Unknown team id: X".
+     Better to fail here, clearly, than to send a meaningless ID onward.
+
+  2. Call the Python inference service.
+     Sends a POST to http://localhost:8000/predict using Spring's
+     RestClient. Waits for the seven numbers to come back.
+
+  3. Find or create the game.
+     Looks for an existing game with this home team, away team and date.
+     If found, reuse it. If not, create one with played = false.
+
+  4. Save the prediction, linked to that game, stamped with the current
+     time.
+
+  5. Build and return a GameSummaryDto.
+
+  THE ORDER OF STEPS 2 AND 3 IS DELIBERATE AND WAS CHANGED TODAY.
+  Originally the game was created first, then Python was called. That meant
+  a rejected request still left a game row behind - see section 11.3.
+  Calling Python first means a rejection happens before anything is written.
+
+  ERROR TRANSLATION
+  The Python service can refuse a request for good reasons: the date is too
+  far in the future, the data is too old, the two teams are the same. Those
+  come back as a 400 from Python. Without handling, that would surface to
+  our caller as a 500 - "the server broke" - which is wrong and misleading.
+  So the service catches them and re-reports them as 400 with the original
+  explanation attached. If the Python service is unreachable entirely, that
+  becomes a 503 ("service unavailable") instead, because the request itself
+  was fine - the dependency simply is not there.
+
+  @Transactional
+  Marks the whole method as one all-or-nothing database unit. If anything
+  fails partway, every database change made during it is undone.
+
+FILE: service/GameService.java
+WHAT IT DOES: builds the list of upcoming games.
+
+  getUpcomingGames():
+    1. Ask the repository for unplayed games, soonest first.
+    2. For each one, ask the prediction repository for its newest
+       prediction.
+    3. Assemble a GameSummaryDto: the two team abbreviations, the date,
+       the played flag, and that newest prediction (or null).
+
+  @Transactional(readOnly = true)
+  Necessary. The teams on a Game are lazily loaded, so reading
+  game.getHomeTeam().getAbbreviation() only works while the database
+  session is open. The annotation keeps it open for the duration of the
+  method. "readOnly" tells the database no changes are coming, which lets
+  it skip some bookkeeping.
+
+-------------------------------------------------------------------------------
+6.7  THE CONTROLLERS  (folder: controller/)
+-------------------------------------------------------------------------------
+
+Controllers are thin on purpose: receive request, delegate, return result.
+No logic lives here.
+
+FILE: controller/PredictionController.java
+  Handles POST /api/predictions. Passes the request body to
+  PredictionService and returns what comes back.
+
+FILE: controller/GameController.java
+  Handles GET /api/games/upcoming. Calls GameService.
+
+FILE: controller/TeamController.java
+  Handles GET /api/teams. This one calls the repository DIRECTLY, with no
+  service in between. That is a deliberate exception: there is no logic to
+  perform - it fetches all teams and converts each to a DTO. A service
+  class here would be an empty layer that only forwards calls. It also
+  needs no transaction, because Team has no lazily-loaded fields.
+
+-------------------------------------------------------------------------------
+6.8  THE TEST FILE
+-------------------------------------------------------------------------------
+
+FILE: src/test/java/.../BasketballPredictorApplicationTests.java
+  Contains one automatic test, "contextLoads", generated when the project
+  was created. It checks the application can start up without errors -
+  which does catch real problems like a missing library or a class Spring
+  cannot construct. It does NOT test any endpoint behaviour. Endpoint
+  testing today was done manually; see section 10.
+
+  Note: this test needs a reachable database and DB_PASSWORD set, because
+  starting the app means connecting to Postgres.
+
+
+===============================================================================
+7. HOW A REQUEST TRAVELS THROUGH THE SYSTEM
+===============================================================================
+
+Follow one prediction request from start to finish.
+
+Someone sends:
+
+    POST http://localhost:8080/api/predictions
+    { "homeTeamId": 1610612738,
+      "awayTeamId": 1610612737,
+      "gameDate": "2026-04-13" }
+
+  STEP 1  Spring's web server receives it, sees the URL /api/predictions
+          and the POST method, and routes it to PredictionController.
+          The JSON text is converted into a PredictionRequest object.
+
+  STEP 2  The controller hands it to PredictionService and does nothing
+          else.
+
+  STEP 3  A database transaction begins.
+
+  STEP 4  The service looks up team 1610612738 (Boston) and 1610612737
+          (Atlanta) in the team table. Both exist, so it continues.
+          (If one did not: stop, 400, transaction undone, nothing saved.)
+
+  STEP 5  The service builds an InferenceRequest and POSTs it to
+          http://localhost:8000/predict. The field names are converted to
+          the underscore style Python expects.
+
+  STEP 6  The Python service:
+            - looks up both teams' recent game history,
+            - computes 34 numbers describing form, rest and strength,
+            - runs all seven models,
+            - returns the seven predictions plus data_as_of and stale.
+
+  STEP 7  The reply JSON is converted into an InferenceResponse object.
+          (If Python replied 400, the service stops here and reports 400
+          with Python's explanation. Nothing has been written yet.)
+
+  STEP 8  The service looks for an existing game: Boston vs Atlanta on
+          2026-04-13. If none, it creates one. The database assigns id 1.
+
+  STEP 9  A Prediction row is created holding the seven numbers, linked to
+          game 1, tagged with data_as_of, stale, and the current time.
+          Saved. The database assigns it an id.
+
+  STEP 10 A GameSummaryDto is assembled while the session is still open.
+
+  STEP 11 The transaction commits. Everything is now permanent.
+
+  STEP 12 Spring converts the DTO to JSON and sends it back with status
+          200.
+
+Total time: well under a second, dominated by step 6.
+
+
+===============================================================================
+8. THE THREE ENDPOINTS (exact contracts)
+===============================================================================
+
+Base address while running locally: http://localhost:8080
+
+-------------------------------------------------------------------------------
+8.1  POST /api/predictions
+-------------------------------------------------------------------------------
+PURPOSE: produce and store a new prediction for a matchup.
+REQUIRES: the Python inference service to be running.
+
+REQUEST BODY:
+    {
+      "homeTeamId": 1610612738,
+      "awayTeamId": 1610612737,
+      "gameDate": "2026-04-13"
+    }
+
+SUCCESSFUL RESPONSE (200) - real output captured during testing:
+    {
+      "id": 1,
+      "homeTeamAbbreviation": "BOS",
+      "awayTeamAbbreviation": "ATL",
+      "gameDate": "2026-04-13",
+      "played": false,
+      "latestPrediction": {
+        "homeWinProbability": 0.6774816513061523,
+        "homeMargin": 6.337834358215332,
+        "totalPoints": 229.40158081054688,
+        "reboundMargin": 1.154099941253662,
+        "totalRebounds": 87.83432006835938,
+        "assistMargin": 1.484527587890625,
+        "totalAssists": 51.09759521484375,
+        "dataAsOf": "2026-04-12",
+        "stale": true,
+        "predictedAt": "2026-08-19T11:13:00.308972400Z"
+      }
+    }
+
+READING THAT: Boston hosting Atlanta. The models give Boston a 67.7% chance
+of winning, expect them to win by about 6.3 points, expect about 229 total
+points. "stale": true means the underlying data ends 12 April 2026 and is
+therefore old relative to today - the numbers are still returned, but the
+caller has been told plainly.
+
+ERROR RESPONSES:
+    400  Unknown team id: 9999999999
+    400  home and away must differ (rejected by the Python service)
+    400  game_date more than 1 day past the newest game in the data
+    503  Inference service unreachable (the Python service is not running)
+
+-------------------------------------------------------------------------------
+8.2  GET /api/games/upcoming
+-------------------------------------------------------------------------------
+PURPOSE: list every game not yet played, soonest first, each with its most
+recent prediction.
+REQUIRES: only the database. The Python service need not be running.
+
+REQUEST BODY: none.
+
+RESPONSE (200): a list. Empty list [] if there are no upcoming games.
+
+    [
+      {
+        "id": 1,
+        "homeTeamAbbreviation": "BOS",
+        "awayTeamAbbreviation": "ATL",
+        "gameDate": "2026-04-13",
+        "played": false,
+        "latestPrediction": { ...same shape as above... }
+      }
+    ]
+
+latestPrediction is null for a game that has no predictions yet.
+
+-------------------------------------------------------------------------------
+8.3  GET /api/teams
+-------------------------------------------------------------------------------
+PURPOSE: list all 30 NBA teams. Mainly so a website can populate a
+team-picker and know the valid IDs.
+REQUIRES: only the database.
+
+RESPONSE (200): a list of 30 objects.
+
+    [
+      { "id": 1610612737, "name": "Atlanta Hawks", "abbreviation": "ATL" },
+      { "id": 1610612764, "name": "Washington Wizards", "abbreviation": "WAS" },
+      ...
+    ]
+
+Note: the order is whatever the database returns, NOT alphabetical.
+
+
+===============================================================================
+9. HOW TO RUN EVERYTHING
+===============================================================================
+
+PREREQUISITES
+  - PostgreSQL installed and running, with a database named
+    basketball_predictor.
+    On this machine psql lives at:
+      C:\Program Files\PostgreSQL\17\bin\psql
+  - Java installed (this machine has Java 25).
+  - Python installed, with the inference service's requirements installed.
+  - The seven trained model files present in ml-training/models/.
+
+-------------------------------------------------------------------------------
+STEP 1 - START THE PYTHON INFERENCE SERVICE (needed for predictions only)
+-------------------------------------------------------------------------------
+  Open a terminal:
+
+    cd c:\Users\User\Desktop\basketball-predictor\inference-service
+    python -m uvicorn app:app --port 8000
+
+  Confirm it is alive by opening in a browser, or with curl:
+
+    http://localhost:8000/health
+
+  Expected:
+    {"status":"ok","models_loaded":7,"data_as_of":"2026-04-12",
+     "days_behind":129,"stale":true}
+
+  Leave this terminal running.
+
+-------------------------------------------------------------------------------
+STEP 2 - START THE BACKEND
+-------------------------------------------------------------------------------
+  Open a SECOND terminal. The database password must be supplied as an
+  environment variable.
+
+  PowerShell:
+    cd c:\Users\User\Desktop\basketball-predictor\backend
+    $env:DB_PASSWORD = "postgres"
+    .\mvnw spring-boot:run
+
+  Git Bash:
+    cd /c/Users/User/Desktop/basketball-predictor/backend
+    DB_PASSWORD=postgres ./mvnw spring-boot:run
+
+  Wait for a line similar to:
+    Started BasketballPredictorApplication in 2.8 seconds
+
+  The backend is now listening on http://localhost:8080.
+
+-------------------------------------------------------------------------------
+STOPPING
+-------------------------------------------------------------------------------
+  Ctrl+C in each terminal.
+
+  IMPORTANT: Ctrl+C on Maven sometimes leaves the Java process running and
+  holding port 8080. The next start then fails with "Port 8080 was already
+  in use". This happened repeatedly during development. To clear it:
+
+  PowerShell:
+    Get-NetTCPConnection -LocalPort 8080 -State Listen |
+      ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+
+===============================================================================
+10. HOW TO TEST EVERYTHING
+===============================================================================
+
+These are the exact checks performed today, in order, with the results that
+were actually observed. Anyone can repeat them.
+
+Commands are given for PowerShell. curl.exe is used rather than curl so
+PowerShell does not substitute its own different command.
+
+-------------------------------------------------------------------------------
+TEST 1 - Does the backend start and connect to the database?
+-------------------------------------------------------------------------------
+  Follow section 9 step 2. Success is the "Started
+  BasketballPredictorApplication" line with no stack trace.
+  A failure here is usually a missing DB_PASSWORD or Postgres not running.
+
+-------------------------------------------------------------------------------
+TEST 2 - Are all 30 teams present?
+-------------------------------------------------------------------------------
+  curl.exe http://localhost:8080/api/teams
+
+  EXPECTED: a list of 30 team objects.
+
+  Cross-check straight from the database, bypassing the application:
+    & "C:\Program Files\PostgreSQL\17\bin\psql" -U postgres `
+      -d basketball_predictor -c "SELECT count(*) FROM team;"
+
+  EXPECTED: 30
+
+  WHY BOTH: the API could return 30 items from a cache or a bug while the
+  database says otherwise. Checking the database directly proves the data
+  is really stored.
+
+-------------------------------------------------------------------------------
+TEST 3 - The main event: create a prediction
+-------------------------------------------------------------------------------
+  Both services must be running.
+
+    curl.exe -X POST http://localhost:8080/api/predictions `
+      -H "Content-Type: application/json" `
+      -d '{\"homeTeamId\":1610612738,\"awayTeamId\":1610612737,\"gameDate\":\"2026-04-13\"}'
+
+  EXPECTED: status 200 and the JSON shown in section 8.1.
+
+  THE STRONGEST CHECK - compare against the Python service directly.
+  Ask Python the same question, bypassing Java entirely:
+
+    curl.exe -X POST http://localhost:8000/predict `
+      -H "Content-Type: application/json" `
+      -d '{\"home_team_id\":1610612738,\"away_team_id\":1610612737,\"game_date\":\"2026-04-13\"}'
+
+  The seven numbers must be IDENTICAL to those returned by the backend. If
+  they are, the backend is faithfully passing through the model output and
+  not corrupting it. This was verified today: all seven matched exactly, to
+  every decimal place.
+
+-------------------------------------------------------------------------------
+TEST 4 - Did it actually reach the database?
+-------------------------------------------------------------------------------
+    & "C:\Program Files\PostgreSQL\17\bin\psql" -U postgres `
+      -d basketball_predictor `
+      -c "SELECT id, nba_game_id, home_team_id, away_team_id, game_date, played FROM game;" `
+      -c "SELECT id, game_id, home_win_probability, data_as_of, stale, predicted_at FROM prediction;"
+
+  EXPECTED: one game row (nba_game_id empty, played = f) and one prediction
+  row pointing at it.
+
+-------------------------------------------------------------------------------
+TEST 5 - Asking twice reuses the game
+-------------------------------------------------------------------------------
+  Send the exact same POST from test 3 again.
+
+  EXPECTED: 200, and the "id" at the top of the response is the SAME game
+  id as before.
+
+  Then:
+    ... -c "SELECT count(*) FROM game;" -c "SELECT count(*) FROM prediction;"
+
+  EXPECTED: games still 1, predictions now 2. One fixture, two forecasts.
+
+-------------------------------------------------------------------------------
+TEST 6 - The upcoming games list, and that it picks the NEWEST prediction
+-------------------------------------------------------------------------------
+    curl.exe http://localhost:8080/api/games/upcoming
+
+  EXPECTED: exactly one game, with latestPrediction filled in.
+
+  THE SUBTLE PART. After test 5 there are two predictions for that game. Is
+  the endpoint really returning the newest, or just whichever the database
+  happened to hand over first? The seven numbers cannot answer this - both
+  predictions contain IDENTICAL values, because the models are
+  deterministic and nothing about the inputs changed between the two calls.
+
+  The only field that differs is predictedAt. So compare it against the
+  database:
+
+    ... -c "SELECT id, predicted_at FROM prediction ORDER BY predicted_at;"
+
+  The predictedAt in the API response must equal the LAST row's timestamp,
+  not the first. Verified today with three predictions on one game: the
+  endpoint returned the third.
+
+  (Timestamps in the API are shown in UTC and end with Z; psql shows local
+  time with a +03 offset. 11:10:07Z and 14:10:07+03 are the same moment.)
+
+-------------------------------------------------------------------------------
+TEST 7 - Bad input is rejected properly
+-------------------------------------------------------------------------------
+  Each of these must return 400 with an explanatory message, NEVER 500:
+
+  a) Unknown team:
+       ...-d '{\"homeTeamId\":9999999999,\"awayTeamId\":1610612737,
+               \"gameDate\":\"2026-04-13\"}'
+     EXPECTED: 400, "Unknown team id: 9999999999"
+
+  b) Same team on both sides:
+       homeTeamId and awayTeamId both 1610612738
+     EXPECTED: 400
+
+  c) A date too far in the future:
+       gameDate 2026-04-20
+     EXPECTED: 400, message quoting the Python service's reason. The models
+     may only predict up to one day past their newest data, because the
+     "days of rest" feature would otherwise be measured against the wrong
+     previous game.
+
+  d) Malformed date:
+       gameDate "not-a-date"
+     EXPECTED: 422, rejected before reaching any of our code.
+
+-------------------------------------------------------------------------------
+TEST 8 - A rejected request must leave NOTHING behind
+-------------------------------------------------------------------------------
+  Count the games:
+    ... -c "SELECT count(*) FROM game;"
+
+  Send a request that will be rejected (test 7c). Count again.
+
+  EXPECTED: the count is UNCHANGED.
+
+  This specifically guards the bug described in section 11.3, where failed
+  requests were silently creating junk game rows.
+
+-------------------------------------------------------------------------------
+TEST 9 - Behaviour when the Python service is down
+-------------------------------------------------------------------------------
+  Stop the inference service (Ctrl+C in its terminal). Send the POST from
+  test 3.
+
+  EXPECTED: 503, "Inference service unreachable: ...". Not 500, and not a
+  hang.
+
+  Meanwhile GET /api/teams and GET /api/games/upcoming must still work
+  normally - they never touch Python.
+
+-------------------------------------------------------------------------------
+TEST 10 - The empty state
+-------------------------------------------------------------------------------
+  Clear the test data:
+    ... -c "DELETE FROM prediction; DELETE FROM game;"
+
+  Then:
+    curl.exe http://localhost:8080/api/games/upcoming
+
+  EXPECTED: []  (an empty list, not an error, not null)
+
+-------------------------------------------------------------------------------
+TEST 11 - The automated test
+-------------------------------------------------------------------------------
+  PowerShell:
+    $env:DB_PASSWORD = "postgres"
+    .\mvnw test
+
+  Runs the single contextLoads test. Passing means the application is
+  correctly wired: every class Spring needs can be built and connected.
+
+
+===============================================================================
+11. PROBLEMS FOUND AND FIXED TODAY
+===============================================================================
+
+These are the most valuable part of this document. Each was a real fault,
+each was silent, and each would have been much harder to diagnose later.
+
+-------------------------------------------------------------------------------
+11.1  Lombok generated nothing on Java 25
+-------------------------------------------------------------------------------
+  SYMPTOM: the very first compile failed with "constructor Team cannot be
+  applied to given types; required: no arguments".
+
+  CAUSE: Java 23 and later no longer run code generators found among the
+  project's libraries. Lombok is such a generator. It was present, but the
+  compiler ignored it, so none of the getters, setters or constructors it
+  was supposed to write existed.
+
+  WHY IT IS CONFUSING: the error points at the line that uses the missing
+  constructor, not at the real cause. Nothing mentions Lombok.
+
+  FIX: name Lombok explicitly in the maven-compiler-plugin's
+  annotationProcessorPaths in pom.xml.
+
+-------------------------------------------------------------------------------
+11.2  "Open Session In View" was hiding a real problem
+-------------------------------------------------------------------------------
+  This is the most important item here.
+
+  BACKGROUND: Spring Boot has a feature, on by default, that keeps the
+  database session open for the entire duration of a web request -
+  including while the response is being converted to JSON. It exists to
+  make lazy loading "just work".
+
+  THE PROBLEM: it makes broken code look correct. The POST endpoint
+  originally returned the database Prediction object directly. Converting
+  that to JSON required loading the Game, and then both Teams. Those loads
+  happened during JSON conversion, silently, only because the session was
+  still open. With one row nobody notices. On a list of fifteen games it
+  becomes dozens of unnecessary database queries at the worst possible
+  moment, and it is invisible in the code.
+
+  Switching the relationships to LAZY did NOT fix this. It only moved the
+  loading later - the session was still open, so it still worked by
+  accident.
+
+  FIX: spring.jpa.open-in-view=false, plus returning DTOs instead of
+  database objects.
+
+  WHAT HAPPENED IMMEDIATELY: the POST endpoint started returning 500 with
+  "Could not initialize proxy [Team#1610612738] - no session". That failure
+  was not caused by the change. The change REVEALED it. The endpoint had
+  been depending on the safety net all along.
+
+  Fixed properly by returning GameSummaryDto, assembled while the session
+  is legitimately open. The setting is now permanently off, so any future
+  code that forgets to load what it needs fails immediately and loudly
+  rather than working by luck.
+
+-------------------------------------------------------------------------------
+11.3  Failed requests were leaving junk games in the database
+-------------------------------------------------------------------------------
+  SYMPTOM: the first call to GET /api/games/upcoming returned THREE games
+  when only one had ever been successfully created. Two were nonsense - one
+  for a date the system had refused, and one for "Boston versus Boston".
+
+  CAUSE: the original order of operations created the game row FIRST and
+  called the Python service SECOND. When Python rejected the request, the
+  error travelled back to the caller correctly - but the game row had
+  already been written and stayed there.
+
+  WHY IT WENT UNNOTICED: the error responses were all correct. Nothing in
+  the API's behaviour hinted that garbage was accumulating. It only became
+  visible once an endpoint existed that listed games.
+
+  FIX, two layers:
+    1. Call the Python service BEFORE creating anything, so a rejection
+       never reaches the database at all.
+    2. Mark the whole operation @Transactional, so if anything fails later,
+       every change is undone automatically.
+
+  Verified: a rejected request now leaves the game count unchanged.
+
+-------------------------------------------------------------------------------
+11.4  Database could not retrofit auto-generated IDs
+-------------------------------------------------------------------------------
+  Game.id was changed from "supply your own value" to "let the database
+  generate it". The automatic schema updater (ddl-auto=update) can ADD
+  tables and columns, but it cannot ALTER an existing column to become
+  auto-generating. It would have silently done nothing, and inserts would
+  have failed later with a confusing "null value violates not-null
+  constraint" error, far from the real cause.
+
+  FIX: confirmed the game and prediction tables were empty (0 rows),
+  dropped them, and let Hibernate recreate them correctly. Afterwards the
+  result was CHECKED rather than assumed:
+
+    SELECT table_name, column_name, is_identity FROM information_schema.columns
+    WHERE column_name = 'id' AND table_name IN ('team','game','prediction');
+
+  Result: game YES, prediction YES, team NO. Exactly as intended.
+
+-------------------------------------------------------------------------------
+11.5  Two Spring Boot 4 migration surprises
+-------------------------------------------------------------------------------
+  a) RestClient.Builder could not be found, and the application refused to
+     start. In Spring Boot 4 the tooling for CALLING other services moved
+     into a separate package. Fixed by adding
+     spring-boot-starter-restclient.
+
+  b) The property for including error messages was renamed. The old
+     server.error.include-message is deprecated; the correct name is now
+     spring.web.error.include-message.
+
+-------------------------------------------------------------------------------
+11.6  Team abbreviations were not where expected
+-------------------------------------------------------------------------------
+  The plan was to load teams from the pipeline's processed file
+  games_final.csv. That file turned out to contain team IDs and names but
+  NOT abbreviations. The raw season files under data-pipeline/data/raw/ do
+  contain all three.
+
+  Before relying on them, they were checked for consistency: across all
+  eleven seasons there are exactly 30 distinct (id, name, abbreviation)
+  combinations, with no team ever changing name or abbreviation. So there
+  was no ambiguity about which version to store.
+
+
+===============================================================================
+12. DESIGN DECISIONS AND WHY
+===============================================================================
+
+WHY REAL NBA IDs FOR TEAMS, BUT GENERATED IDs FOR GAMES?
+  Teams already have permanent, official, unique numbers, and the pipeline
+  data is keyed by them. Reusing them removes an entire class of
+  translation bugs.
+  Games are different: this app currently invents games for matchups a user
+  asks about, and those have no official number yet. So the database
+  assigns one, and the nba_game_id column waits for the real value.
+
+WHY KEEP EVERY PREDICTION INSTEAD OF OVERWRITING?
+  A prediction is a statement made at a moment in time with the information
+  available then. Overwriting would destroy the ability to ask "what did we
+  think a week ago, and were we right?". Storage is cheap; history is not
+  recoverable once discarded.
+
+WHY STORE data_as_of AND stale?
+  Because a prediction from stale data looks exactly like a good one.
+  Recording the freshness makes an invisible weakness visible, permanently.
+
+WHY IS THE PREDICTION LOGIC IN A SERVICE, BUT THE TEAM LIST IS NOT?
+  A service earns its place when there is logic to hold. PredictionService
+  makes real decisions: validation, calling another service, error
+  translation, find-or-create, saving. Listing teams is a fetch and a
+  conversion. A service there would be an empty layer that only forwards
+  calls, which adds a file to read without adding meaning.
+
+WHY IS THE PYTHON SERVICE CALLED BEFORE ANYTHING IS SAVED?
+  Because most failures come from that call. Doing it first means the
+  common failure path never touches the database at all.
+
+WHY THE URL OF THE PYTHON SERVICE IS A SETTING, NOT IN THE CODE
+  It changes between a developer's machine and a real deployment.
+  Configuration belongs in configuration.
+
+
+===============================================================================
+13. KNOWN LIMITATIONS AND WHAT COMES NEXT
+===============================================================================
+
+These are understood and accepted for now, not oversights.
+
+1. NO SCHEDULE FEED
+   The system does not know the real NBA fixture list. Games only exist
+   once someone asks for a prediction. Until this is added, nba_game_id
+   stays null and "upcoming games" means "matchups somebody asked about".
+
+2. PREDICTIONS ONLY ONE DAY AHEAD
+   The models use "days since last game" as an input. For a fixture further
+   out, with unplayed games in between, that would be measured against the
+   wrong previous game. The Python service enforces the one-day limit.
+   Lifting it needs the schedule feed from point 1.
+
+3. THE DATA IS CURRENTLY STALE
+   The pipeline's newest game is 12 April 2026. Every prediction made today
+   is therefore flagged stale = true. Correct behaviour, honestly reported,
+   but the numbers should be treated accordingly.
+
+4. "played" IS NEVER SET TO TRUE
+   Nothing yet notices that a game has finished.
+
+5. ddl-auto=update WILL NOT SCALE
+   It only ever adds. It never renames, removes or alters. Rename a field
+   later and the old column silently remains alongside the new one. The
+   standard replacement is a migration tool such as Flyway, deliberately
+   deferred while the schema is still changing.
+
+6. THE UPCOMING-GAMES QUERY IS "N+1"
+   One query to fetch the games, then one more per game to fetch its latest
+   prediction. With one game that is 2 queries; with a full fifteen-game
+   slate it is 16. Harmless now, worth collapsing into a single query
+   later.
+
+7. A DATABASE TRANSACTION IS HELD OPEN ACROSS THE CALL TO PYTHON
+   This buys all-or-nothing safety, at the cost of occupying a database
+   connection while waiting on the network. Fine at this scale. If the
+   Python service ever becomes slow, this would need revisiting.
+
+8. NO AUTHENTICATION, NO RATE LIMITING
+   Anyone who can reach the port can call any endpoint. Acceptable on a
+   local machine, not acceptable if exposed publicly.
+
+9. AUTOMATED TEST COVERAGE IS MINIMAL
+   Only "the application starts" is automated. Everything else in section
+   10 is manual. Converting those into automated tests is the obvious next
+   improvement.
+
+ALSO ON THE POST-VERSION-1 LIST (from earlier project work):
+   injury data, betting odds data, quarter and half predictions, player
+   prop predictions, and an automated retraining pipeline.
+
+
+===============================================================================
+14. QUICK REFERENCE CHEAT SHEET
+===============================================================================
+
+START PYTHON SERVICE
+  cd inference-service
+  python -m uvicorn app:app --port 8000
+
+START BACKEND (PowerShell)
+  cd backend
+  $env:DB_PASSWORD = "postgres"
+  .\mvnw spring-boot:run
+
+ENDPOINTS
+  GET  http://localhost:8080/api/teams            all 30 teams
+  GET  http://localhost:8080/api/games/upcoming   unplayed games + latest
+                                                  prediction
+  POST http://localhost:8080/api/predictions      create a prediction
+  GET  http://localhost:8000/health               is Python alive, is the
+                                                  data fresh
+
+DATABASE
+  & "C:\Program Files\PostgreSQL\17\bin\psql" -U postgres -d basketball_predictor
+
+  \dt                        list tables
+  SELECT * FROM team;        30 rows
+  SELECT * FROM game;
+  SELECT * FROM prediction ORDER BY predicted_at DESC;
+  DELETE FROM prediction; DELETE FROM game;    clear test data (keeps teams)
+
+FREE PORT 8080 AFTER A BAD SHUTDOWN (PowerShell)
+  Get-NetTCPConnection -LocalPort 8080 -State Listen |
+    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+FILE MAP
+  backend/pom.xml                       libraries and build settings
+  backend/src/main/resources/
+    application.properties              all settings
+  backend/src/main/java/com/andreisichet/basketball_predictor/
+    BasketballPredictorApplication.java startup
+    model/Team.java                     team table
+    model/Game.java                     game table
+    model/Prediction.java               prediction table
+    repository/TeamRepository.java      team queries
+    repository/GameRepository.java      game queries
+    repository/PredictionRepository.java prediction queries
+    dto/PredictionRequest.java          incoming POST body
+    dto/InferenceRequest.java           what we send to Python
+    dto/InferenceResponse.java          what Python sends back
+    dto/PredictionDto.java              prediction as sent to clients
+    dto/GameSummaryDto.java             game + latest prediction
+    dto/TeamDto.java                    team as sent to clients
+    service/PredictionService.java      the main logic
+    service/GameService.java            upcoming games logic
+    controller/PredictionController.java POST /api/predictions
+    controller/GameController.java      GET /api/games/upcoming
+    controller/TeamController.java      GET /api/teams
+
+VERSIONS ON THIS MACHINE
+  Java 25, Spring Boot 4.1.0, PostgreSQL 17, Maven via ./mvnw wrapper
+
+===============================================================================
+END OF DOCUMENT
+===============================================================================
