@@ -13,6 +13,12 @@ That's invisible to callers unless the response says so.
 
 Feature building lives in ml-training/live_features.py, not here, so there
 is one implementation with a verification harness rather than a copy.
+
+/schedule is the odd one out: it reaches the live NBA API rather than the
+local dataset, so it is the only endpoint that can fail for reasons that
+have nothing to do with this service. It returns fixtures, never
+predictions - most of what it returns is not predictable (see
+MAX_DAYS_AHEAD), and deciding that is the caller's job.
 """
 
 from contextlib import asynccontextmanager
@@ -21,7 +27,8 @@ from pathlib import Path
 import sys
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from nba_api.stats.endpoints import scheduleleaguev2
 from pydantic import BaseModel, Field
 from xgboost import XGBClassifier, XGBRegressor
 
@@ -32,7 +39,11 @@ if str(ML_TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(ML_TRAINING_DIR))
 
 from common import FEATURE_COLUMNS  # noqa: E402
-from live_features import get_live_features, load_games_final  # noqa: E402
+from live_features import (  # noqa: E402
+    get_live_features,
+    load_games_final,
+    season_of,
+)
 
 MODELS_DIR = ML_TRAINING_DIR / "models"
 
@@ -45,6 +56,25 @@ STALE_AFTER_DAYS = 2
 # games in between - the gap would be measured against the wrong game.
 MAX_DAYS_AHEAD = 1
 
+# Schedule lookahead when the caller doesn't say. Unrelated to
+# MAX_DAYS_AHEAD: this is how far to *list*, not how far to predict.
+SCHEDULE_DAYS_AHEAD_DEFAULT = 14
+SCHEDULE_TIMEOUT_SECONDS = 45
+
+# 3rd digit of the zero-padded 10-digit game id: 1=preseason, 2=regular,
+# 3=All-Star, 4=playoffs, 5=play-in, 6=NBA Cup final. The models only ever
+# saw regular-season games (the training pull is filtered the same way), so
+# listing anything else would offer fixtures they have no business scoring.
+REGULAR_SEASON_GAME_ID_DIGIT = "2"
+
+# gameStatus 1=scheduled, 2=live, 3=final. Only 1 is unplayed.
+GAME_STATUS_SCHEDULED = 1
+
+# The schedule changes rarely and the upstream call costs seconds, so a
+# button press does not need to hit nba_api every time. fetch_games.py is
+# deliberately gentle with this API for the same reason.
+SCHEDULE_CACHE_TTL_SECONDS = 6 * 60 * 60
+
 # What this service serves. (model file stem, response field, is_classification)
 MODEL_REGISTRY = [
     ("moneyline", "home_win_probability", True),
@@ -55,6 +85,12 @@ MODEL_REGISTRY = [
     ("ast_margin", "assist_margin", False),
     ("ast_total", "total_assists", False),
 ]
+
+
+class ScheduledGame(BaseModel):
+    home_team_id: int
+    away_team_id: int
+    game_date: date
 
 
 class PredictionRequest(BaseModel):
@@ -93,6 +129,9 @@ class ServiceState:
 
 
 state = ServiceState()
+
+# (season, fetched_at, dataframe) for the last schedule pulled.
+_schedule_cache: dict = {}
 
 
 def load_models() -> dict:
@@ -162,6 +201,84 @@ def health():
         "days_behind": days_behind,
         "stale": stale,
     }
+
+
+def season_string(today: date) -> str:
+    """Season as ScheduleLeagueV2 wants it: "2026-27".
+
+    season_of wraps the pipeline's derive_season, so the August boundary
+    that decides which season a date belongs to stays defined in exactly
+    one place. Only the formatting is new.
+    """
+    start_year = season_of(pd.Timestamp(today))
+    return f"{start_year}-{str(start_year + 1)[2:]}"
+
+
+def fetch_schedule_frame(season: str) -> pd.DataFrame:
+    """The season's full schedule, cached briefly."""
+    cached = _schedule_cache.get(season)
+    if cached is not None:
+        age = (datetime.now() - cached["fetched_at"]).total_seconds()
+        if age < SCHEDULE_CACHE_TTL_SECONDS:
+            return cached["frame"]
+
+    try:
+        frame = scheduleleaguev2.ScheduleLeagueV2(
+            season=season, league_id="00", timeout=SCHEDULE_TIMEOUT_SECONDS
+        ).get_data_frames()[0]
+    except Exception as error:
+        # Anything from a DNS failure to nba_api handing back HTML instead
+        # of JSON. The request was fine; the upstream was not.
+        raise HTTPException(
+            502, f"Could not reach the NBA schedule API for season {season}: {error}"
+        ) from error
+
+    _schedule_cache[season] = {"fetched_at": datetime.now(), "frame": frame}
+    return frame
+
+
+@app.get("/schedule", response_model=list[ScheduledGame])
+def schedule(
+    days_ahead: int = Query(SCHEDULE_DAYS_AHEAD_DEFAULT, ge=1, le=365),
+):
+    """Upcoming regular-season fixtures, as candidates to display.
+
+    Says nothing about whether any of them can actually be predicted -
+    /predict enforces MAX_DAYS_AHEAD and will reject most of these. An
+    offseason gap or an unreleased schedule is an empty list, not an error:
+    "nothing scheduled" is an answer, not a failure.
+    """
+    today = pd.Timestamp(datetime.now().date())
+    frame = fetch_schedule_frame(season_string(today.date()))
+
+    if frame.empty:
+        return []
+
+    # Derive before filtering, never after. .assign() of a Series onto a
+    # zero-row frame reindexes the frame back up to the Series' index
+    # (pandas 2.3), so filtering first would turn "nothing scheduled" into
+    # a full frame of NaN - and the offseason is exactly when that happens.
+    frame = frame.assign(
+        parsed_date=pd.to_datetime(frame["gameDate"], format="%m/%d/%Y %H:%M:%S"),
+        padded_game_id=frame["gameId"].astype(str).str.zfill(10),
+    )
+    horizon = today + pd.DateOffset(days=days_ahead)
+
+    upcoming = frame[
+        (frame["parsed_date"] >= today)
+        & (frame["parsed_date"] <= horizon)
+        & (frame["gameStatus"] == GAME_STATUS_SCHEDULED)
+        & (frame["padded_game_id"].str[2] == REGULAR_SEASON_GAME_ID_DIGIT)
+    ].sort_values(["parsed_date", "padded_game_id"])
+
+    return [
+        ScheduledGame(
+            home_team_id=int(row.homeTeam_teamId),
+            away_team_id=int(row.awayTeam_teamId),
+            game_date=row.parsed_date.date(),
+        )
+        for row in upcoming.itertuples()
+    ]
 
 
 @app.post("/predict", response_model=PredictionResponse)

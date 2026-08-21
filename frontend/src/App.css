@@ -1,38 +1,159 @@
-.App {
-  text-align: center;
+.app {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  font-family: system-ui, sans-serif;
+  color: #222;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
+h1 {
+  font-size: 1.6rem;
+  margin-bottom: 8px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
+.intro p {
+  color: #444;
+  line-height: 1.5;
+  margin: 0 0 8px;
 }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+.intro-note {
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.fetch-button {
+  padding: 8px 16px;
+  font-size: 1rem;
+  cursor: pointer;
+  margin: 8px 0 16px;
+}
+
+.fetch-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.freshness {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.status {
+  color: #555;
+}
+
+.status.error {
+  color: #b00020;
+}
+
+.fixture-list {
+  list-style: none;
+  padding: 0;
+}
+
+.fixture {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.fixture:hover {
+  border-color: #999;
+  background: #fafafa;
+}
+
+.fixture-teams {
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+
+.matchup {
+  font-weight: 600;
+}
+
+.game-date {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* The action only appears on hover, per the design. :focus-within keeps it
+   reachable by keyboard, which hover alone would strand. */
+.fixture-action {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
+  gap: 8px;
+  visibility: hidden;
+  text-align: right;
 }
 
-.App-link {
-  color: #61dafb;
+.fixture:hover .fixture-action,
+.fixture:focus-within .fixture-action {
+  visibility: visible;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.fixture-action button {
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fixture-action button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.unavailable-reason {
+  font-size: 0.8rem;
+  color: #777;
+  max-width: 150px;
+}
+
+/* Normal state right now, not an edge case: every prediction is stale
+   until the pipeline is rerun with new season data. */
+.stale-badge {
+  background: #b00020;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.back-button {
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin-bottom: 16px;
+}
+
+.prediction-grid {
+  margin: 16px 0 0;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid #eee;
+  padding: 10px 4px;
+}
+
+.metric-row dt {
+  color: #444;
+}
+
+.metric-row dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
