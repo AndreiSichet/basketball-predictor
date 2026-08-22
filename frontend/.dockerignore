@@ -1,0 +1,11 @@
+# The root .dockerignore does NOT apply here: Docker reads the one at the
+# root of the build context, and this image is built with context frontend/.
+# Without this file, node_modules (~264 MB) is uploaded to the daemon and
+# then thrown away, since the build runs npm ci itself.
+node_modules/
+build/
+Dockerfile
+.dockerignore
+.env.local
+.env.*.local
+npm-debug.log*

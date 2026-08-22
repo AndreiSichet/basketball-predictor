@@ -1,0 +1,6 @@
+# Same reason as frontend/.dockerignore: this image is built with context
+# backend/, so the repo-root ignore file is not consulted. target/ is ~49 MB
+# of host build output that the build stage regenerates anyway.
+target/
+Dockerfile
+.dockerignore

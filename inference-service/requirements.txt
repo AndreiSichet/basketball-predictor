@@ -1,6 +1,11 @@
 fastapi
 uvicorn
 xgboost
+# Required by xgboost's sklearn API, not used directly. app.py loads models
+# as XGBClassifier/XGBRegressor rather than raw Booster, and XGBModel.__init__
+# raises "sklearn needs to be installed" without it. Easy to miss locally,
+# where the shared dev venv already has it for ml-training.
+scikit-learn
 pandas
 numpy
 nba_api

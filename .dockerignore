@@ -1,0 +1,39 @@
+# Keeps the build context small. Without this, `docker build .` uploads the
+# whole repo - virtualenv, git history, node_modules, MLflow runs and the
+# raw season CSVs - to the daemon before the first instruction runs.
+#
+# Note the **/ prefixes. A bare `node_modules` only matches at the context
+# root, and every one of these actually lives one level down
+# (frontend/node_modules, ml-training/mlruns, and __pycache__ in three
+# places), so the un-prefixed form would silently match nothing.
+
+**/.venv/
+**/venv/
+.git/
+.gitignore
+
+**/node_modules/
+frontend/build/
+
+**/__pycache__/
+**/*.pyc
+
+# MLflow tracking data: experiment history, not something a service serves.
+**/mlruns/
+
+# Maven build output; the backend image builds its own.
+backend/target/
+
+# Raw per-season pulls. Only the processed games_final.csv is served, and
+# the rest of data/processed/ is intermediate pipeline output.
+data-pipeline/data/raw/
+data-pipeline/data/processed/games_master.csv
+data-pipeline/data/processed/games_with_rolling.csv
+data-pipeline/data/processed/games_with_features.csv
+data-pipeline/data/processed/model_dataset.csv
+
+# Editor/OS noise.
+.vscode/
+*.code-workspace
+Thumbs.db
+.DS_Store

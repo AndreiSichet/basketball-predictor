@@ -4,7 +4,11 @@
  * No client library yet — three calls do not justify one.
  */
 
-const API_BASE = 'http://localhost:8080/api';
+// Inlined by create-react-app at build time. Defaults to the dev-server
+// setup, so `npm start` is unchanged; the Docker build overrides it with a
+// build arg. Must always be an address the BROWSER can reach - a compose
+// service name would not resolve in the user's browser.
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8080/api';
 
 /**
  * Turn a non-2xx response into a thrown Error carrying the backend's own

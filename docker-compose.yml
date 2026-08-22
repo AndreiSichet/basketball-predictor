@@ -1,0 +1,78 @@
+# The whole stack on one network, where services reach each other by name.
+# This is what retires the host.docker.internal overrides: "postgres" and
+# "inference-service" below are DNS names inside the compose network.
+#
+#   docker compose up --build
+#
+# Published ports are only for reaching the stack from the host machine:
+# 3000 (frontend), 8080 (backend), 8000 (inference), 5432 (psql).
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: basketball_predictor
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume, so the schema and the 30 seeded teams survive a
+      # `docker compose down`. Removing it means re-seeding from scratch.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # depends_on alone only waits for the container to start, not for
+      # Postgres to accept connections. Hikari fails fast on an unreachable
+      # database, so without this gate the backend loses the race on a cold
+      # start and exits.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d basketball_predictor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  inference-service:
+    build:
+      # Context is the repository root: this service imports from
+      # ml-training/ and data-pipeline/, so the siblings must be visible.
+      context: .
+      dockerfile: inference-service/Dockerfile
+    ports:
+      - "8000:8000"
+
+  backend:
+    build:
+      # Context is backend/ - it only needs its own pom.xml and src/.
+      context: backend
+      dockerfile: Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PASSWORD: postgres
+      INFERENCE_URL: http://inference-service:8000
+      # Stays localhost:3000: this is the origin the browser sends, and the
+      # browser is outside the compose network.
+      FRONTEND_ORIGIN: http://localhost:3000
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inference-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        # A build arg, not an environment entry: create-react-app inlines
+        # this into the bundle at build time. And it points at localhost,
+        # not http://backend:8080 - the fetch runs in the user's browser,
+        # which cannot resolve compose service names.
+        REACT_APP_API_BASE: http://localhost:8080/api
+    ports:
+      # nginx listens on 80 inside the container.
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
