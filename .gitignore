@@ -9,6 +9,13 @@ data-pipeline/data/raw/*
 !data-pipeline/data/raw/.gitkeep
 data-pipeline/data/processed/*
 !data-pipeline/data/processed/.gitkeep
+# games_final.csv is not disposable intermediate output any more: the
+# inference service reads it at startup and inference-service/Dockerfile
+# copies it into the image, so a fresh clone cannot build without it. Same
+# reasoning as the committed ml-training/models/*.json. Everything else here
+# (games_master, games_with_rolling, games_with_features, model_dataset)
+# is still regenerable pipeline output and stays ignored.
+!data-pipeline/data/processed/games_final.csv
 ml-training/models/*
 !ml-training/models/.gitkeep
 ml-training/mlruns/*
