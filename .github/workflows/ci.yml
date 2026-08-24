@@ -74,6 +74,14 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # Mirrors frontend/Dockerfile. setup-node installs whatever npm ships
+      # with the runner image, which is not necessarily the version that
+      # generated package-lock.json - and npm ci then fails outright on the
+      # resulting lockfile mismatch ("Missing: yaml@2.9.0 from lock file").
+      - name: Pin npm to match lock file
+        working-directory: frontend
+        run: npm install -g npm@11.16.0
+
       - name: Install
         working-directory: frontend
         run: npm ci

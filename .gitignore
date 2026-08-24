@@ -12,12 +12,21 @@ data-pipeline/data/processed/*
 # games_final.csv is not disposable intermediate output any more: the
 # inference service reads it at startup and inference-service/Dockerfile
 # copies it into the image, so a fresh clone cannot build without it. Same
-# reasoning as the committed ml-training/models/*.json. Everything else here
+# reasoning as ml-training/models/*.json below. Everything else here
 # (games_master, games_with_rolling, games_with_features, model_dataset)
 # is still regenerable pipeline output and stays ignored.
 !data-pipeline/data/processed/games_final.csv
 ml-training/models/*
 !ml-training/models/.gitkeep
+# The 7 production models are a runtime dependency, not build output: the
+# inference service refuses to boot unless models/ matches MODEL_REGISTRY
+# exactly, and its Dockerfile copies them in. This blanket rule predates
+# finalize_models.py, so when it started writing .json files here they
+# landed inside an ignore rule already covering the folder and were never
+# committed - invisible locally, because docker build reads the filesystem
+# and does not care what git tracks. actions/checkout is the first thing
+# that only ever sees committed files, which is what surfaced it.
+!ml-training/models/*.json
 ml-training/mlruns/*
 !ml-training/mlruns/.gitkeep
 
