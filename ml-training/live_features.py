@@ -140,19 +140,85 @@ def team_features(games_final_df: pd.DataFrame, team_id: int, game_date: pd.Time
     return features
 
 
+# Availability is only computed when the models actually consume it, i.e.
+# when common.py lists these in FEATURE_COLUMNS. It does as of the live
+# injury-report work, so predictions now attempt a fetch; if the columns are
+# ever removed again, this module silently stops fetching and needs no other
+# change.
+AVAILABILITY_FEATURES = ("ABSENT_COUNT", "WEIGHTED_ABSENT_MIN")
+
+
+def availability_is_required() -> bool:
+    return any(
+        f"{prefix}_{name}" in FEATURE_COLUMNS
+        for prefix in ("HOME", "AWAY")
+        for name in AVAILABILITY_FEATURES
+    )
+
+
+def _availability_for_both_teams(home_team_id: int, away_team_id: int) -> dict:
+    """Live ABSENT_COUNT / WEIGHTED_ABSENT_MIN, or NaN if unknowable.
+
+    A missing injury report must not fail the whole prediction: the other
+    34 features are still perfectly computable, and XGBoost handles NaN
+    natively. NaN is also the honest value here - the same "insufficient
+    information, never a fabricated zero" rule the rolling windows and
+    REST_DAYS already follow. A zero would claim both teams are at full
+    strength, which is not something a missing report says.
+    """
+    blank = {
+        f"{prefix}_{name}": float("nan")
+        for prefix in ("HOME", "AWAY")
+        for name in AVAILABILITY_FEATURES
+    }
+
+    try:
+        # Imported inside the try on purpose. injury_availability pulls in
+        # nbainjuries (and through it a Java runtime) and reads the player
+        # history CSV, none of which the inference image currently carries -
+        # so in a container this raises ImportError. That must degrade to
+        # NaN like any other unavailable-report case, not take the whole
+        # prediction down with it.
+        import injury_availability as availability
+
+        reconciled, pending_team_ids = availability.get_live_availability()
+    except Exception as error:
+        # NoReportAvailable in the offseason, ImportError in a container
+        # built without the availability stack, or a network/parse failure.
+        # None of them justify losing the other 34 features.
+        print(f"  availability unknown for this prediction: "
+              f"{type(error).__name__}: {error}")
+        return blank
+
+    values = {}
+    for prefix, team_id in (("HOME", home_team_id), ("AWAY", away_team_id)):
+        team = availability.get_team_live_availability(
+            team_id, reconciled, pending_team_ids
+        )
+        for name in AVAILABILITY_FEATURES:
+            values[f"{prefix}_{name}"] = team[name]
+
+        if pd.isna(team[AVAILABILITY_FEATURES[0]]):
+            print(f"  {prefix} team {team_id}: injury report NOT YET SUBMITTED "
+                  f"- availability recorded as unknown, not zero")
+
+    return values
+
+
 def get_live_features(
     home_team_id: int,
     away_team_id: int,
     game_date,
     games_final_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Assemble the 34-column feature row for one matchup.
+    """Assemble the feature row for one matchup, in FEATURE_COLUMNS order.
 
     games_final_df is passed in so a service can load it once and reuse it
     instead of re-reading the CSV per request.
 
-    Returns a single-row DataFrame in FEATURE_COLUMNS order. The order
-    matters: the saved models carry these names and check them.
+    The row is built from every feature this module knows how to compute,
+    then narrowed to FEATURE_COLUMNS. That order matters: the saved models
+    carry these names and check them at predict time.
     """
     game_date = pd.Timestamp(game_date)
 
@@ -160,6 +226,9 @@ def get_live_features(
     for prefix, team_id in (("HOME", home_team_id), ("AWAY", away_team_id)):
         for name, value in team_features(games_final_df, team_id, game_date).items():
             row[f"{prefix}_{name}"] = value
+
+    if availability_is_required():
+        row.update(_availability_for_both_teams(home_team_id, away_team_id))
 
     missing = set(FEATURE_COLUMNS) - set(row)
     if missing:
@@ -194,8 +263,28 @@ def verify_against_training_data(sample_size: int = 200, seed: int = 42) -> bool
     """
     from train_baseline import load_dataset  # local import: avoids a cycle
 
+    # Availability is deliberately excluded from this comparison, and the
+    # exclusion is structural rather than a convenience. Every other feature
+    # is a pure function of games_final.csv, so a past game can be replayed
+    # exactly. Availability is not: at serving time it comes from the NBA's
+    # *current* injury report, which says nothing about who sat out a game in
+    # 2019. There is no live source that reproduces a historical value, so
+    # comparing them would always fail and would say nothing about whether
+    # this module is correct.
+    #
+    # The historical values in model_dataset.csv are validated separately, by
+    # validate_player_boxscores.py and the hand-checks in CLAUDE.md section 15.
+    replayable_columns = [c for c in FEATURE_COLUMNS
+                          if not any(c.endswith(f"_{name}")
+                                     for name in AVAILABILITY_FEATURES)]
+    skipped = [c for c in FEATURE_COLUMNS if c not in replayable_columns]
+
     games_final_df = load_games_final()
     dataset = load_dataset()
+
+    if skipped:
+        print(f"Replaying {len(replayable_columns)} of {len(FEATURE_COLUMNS)} features.")
+        print(f"Not replayable (live-only, no historical equivalent): {skipped}")
 
     sample = dataset.sample(n=min(sample_size, len(dataset)), random_state=seed)
 
@@ -210,7 +299,7 @@ def verify_against_training_data(sample_size: int = 200, seed: int = 42) -> bool
             games_final_df,
         )
 
-        for column in FEATURE_COLUMNS:
+        for column in replayable_columns:
             got, want = actual[column].iloc[0], expected_row[column]
 
             if pd.isna(got) and pd.isna(want):
@@ -224,8 +313,8 @@ def verify_against_training_data(sample_size: int = 200, seed: int = 42) -> bool
             if not np.isclose(got, want, rtol=1e-9, atol=1e-9):
                 mismatches.append((expected_row["GAME_ID"], column, got, want))
 
-    print(f"Checked {len(sample)} games x {len(FEATURE_COLUMNS)} features "
-          f"= {len(sample) * len(FEATURE_COLUMNS)} values")
+    print(f"Checked {len(sample)} games x {len(replayable_columns)} features "
+          f"= {len(sample) * len(replayable_columns)} values")
     print(f"Largest absolute difference: {max_difference:.2e}")
 
     if mismatches:

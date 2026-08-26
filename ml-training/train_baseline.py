@@ -46,18 +46,13 @@ TEST_SEASON_COUNT = 2
 
 BOOLEAN_FEATURE_COLUMNS = ["HOME_IS_BACK_TO_BACK", "AWAY_IS_BACK_TO_BACK"]
 
-# Present in the dataset, deliberately not trained on. These are real,
-# validated pre-game features that improve spread MAE by ~5.8% (see
-# CLAUDE.md), but live_features.py cannot compute them for an unplayed game,
-# so they stay out of FEATURE_COLUMNS until a live roster source exists.
-# Named explicitly rather than ignored, so the guard below still catches a
-# column nobody has thought about.
-UNUSED_FEATURE_COLUMNS = [
-    "HOME_ABSENT_COUNT",
-    "AWAY_ABSENT_COUNT",
-    "HOME_WEIGHTED_ABSENT_MIN",
-    "AWAY_WEIGHTED_ABSENT_MIN",
-]
+# Present in the dataset but deliberately not trained on. Empty right now:
+# the availability columns that used to sit here are in FEATURE_COLUMNS as
+# of the live-injury-report work, so listing them would tell the guard below
+# to ignore columns that are genuinely in use - defeating its purpose.
+# The mechanism stays for the next feature that needs to land in the dataset
+# before it lands in the model.
+UNUSED_FEATURE_COLUMNS = []
 
 # Ids and post-game outcomes. Everything else in the file must be a feature;
 # load_dataset() checks this.

@@ -4,7 +4,8 @@ Prediction API for the seven basketball models.
 Run with:  uvicorn app:app --port 8000    (from inference-service/)
 
 The games table and all seven models load once at startup. A request then
-only builds a 34-column feature row and runs seven predictions.
+only builds the feature row (width follows common.FEATURE_COLUMNS) and
+runs seven predictions.
 
 Every response includes data_as_of and stale. The service can only see
 games already in games_final.csv, so if the pipeline hasn't run, results

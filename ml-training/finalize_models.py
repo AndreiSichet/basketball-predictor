@@ -44,14 +44,22 @@ PRODUCTION_EXPERIMENT = "production"
 # Frozen here rather than read from MLflow at runtime because mlruns/ is
 # gitignored, so a live lookup couldn't rebuild these models from a fresh
 # clone. verify_tree_counts() re-checks them when MLflow is available.
+#
+# THESE ARE FEATURE-SET SPECIFIC. Measured on the 38-feature set (34 plus
+# HOME_/AWAY_ ABSENT_COUNT and WEIGHTED_ABSENT_MIN). The previous 34-feature
+# values were 118/82/133/78/46/63/141 - note how far several moved once
+# availability was added (spread 82 -> 117, ast_margin 63 -> 131). Reusing
+# counts across a feature-set change would silently under- or over-train,
+# so any edit to common.py's FEATURE_COLUMNS means rerunning both training
+# scripts and refreshing this dictionary from their early-stopping results.
 TREE_COUNTS = {
-    "moneyline": 118,
-    "spread": 82,
+    "moneyline": 131,
+    "spread": 117,
     "totals": 133,
-    "reb_margin": 78,
-    "reb_total": 46,
-    "ast_margin": 63,
-    "ast_total": 141,
+    "reb_margin": 119,
+    "reb_total": 49,
+    "ast_margin": 131,
+    "ast_total": 132,
 }
 
 # The config those counts were measured under. Any run with a different

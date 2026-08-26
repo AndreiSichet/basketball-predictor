@@ -22,19 +22,23 @@ TRACKING_URI = f"sqlite:///{(TRACKING_DIR / 'mlflow.db').as_posix()}"
 ARTIFACT_URI = (TRACKING_DIR / "artifacts").as_uri()
 
 
-# The 17 pre-game features per team. model_dataset.csv holds each twice,
-# prefixed HOME_ and AWAY_, giving 34 model inputs.
+# The 19 pre-game features per team. model_dataset.csv holds each twice,
+# prefixed HOME_ and AWAY_, giving 38 model inputs.
 # Order matters: the saved models store these names and check them at
 # predict time, so inference must build the row in this order.
 #
-# model_dataset.csv also carries HOME_/AWAY_ ABSENT_COUNT and
-# WEIGHTED_ABSENT_MIN. They are deliberately NOT listed here: they improve
-# spread MAE by ~5.8% in training (see CLAUDE.md), but live_features.py
-# cannot compute them for a game that has not been played - there is no box
-# score yet. Defaulting them to 0 at serving time would mean "assume a full
-# roster", which is a 0 standing in for "unknown" - the exact confusion this
-# project removed at the player level. Append them here only once a live
-# roster source exists, and rerun finalize_models.py in the same change.
+# ABSENT_COUNT and WEIGHTED_ABSENT_MIN are appended last, so the original
+# 34 keep their positions. They were held out until a live roster source
+# existed, because live_features.py could not compute them for an unplayed
+# game and a 0 default would have meant "assume a full roster" - a 0
+# standing in for "unknown". That source now exists: the NBA's official
+# injury report, fetched and reconciled by injury_availability.py (CLAUDE.md
+# section 15). When the report is unavailable they resolve to NaN, never 0,
+# which XGBoost handles natively.
+#
+# Any model in models/ trained before this change expects 34 columns and
+# will reject a 38-column row. finalize_models.py must be rerun alongside
+# any edit to this list.
 PER_SIDE_FEATURES = [
     "ROLL5_WIN_PCT",
     "ROLL5_PTS",
@@ -53,6 +57,8 @@ PER_SIDE_FEATURES = [
     "REST_DAYS",
     "IS_BACK_TO_BACK",
     "TEAM_ELO",
+    "ABSENT_COUNT",
+    "WEIGHTED_ABSENT_MIN",
 ]
 
 FEATURE_COLUMNS = [f"{side}_{feat}" for side in ("HOME", "AWAY") for feat in PER_SIDE_FEATURES]
