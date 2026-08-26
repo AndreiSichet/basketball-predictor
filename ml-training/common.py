@@ -26,6 +26,15 @@ ARTIFACT_URI = (TRACKING_DIR / "artifacts").as_uri()
 # prefixed HOME_ and AWAY_, giving 34 model inputs.
 # Order matters: the saved models store these names and check them at
 # predict time, so inference must build the row in this order.
+#
+# model_dataset.csv also carries HOME_/AWAY_ ABSENT_COUNT and
+# WEIGHTED_ABSENT_MIN. They are deliberately NOT listed here: they improve
+# spread MAE by ~5.8% in training (see CLAUDE.md), but live_features.py
+# cannot compute them for a game that has not been played - there is no box
+# score yet. Defaulting them to 0 at serving time would mean "assume a full
+# roster", which is a 0 standing in for "unknown" - the exact confusion this
+# project removed at the player level. Append them here only once a live
+# roster source exists, and rerun finalize_models.py in the same change.
 PER_SIDE_FEATURES = [
     "ROLL5_WIN_PCT",
     "ROLL5_PTS",

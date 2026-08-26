@@ -46,6 +46,19 @@ TEST_SEASON_COUNT = 2
 
 BOOLEAN_FEATURE_COLUMNS = ["HOME_IS_BACK_TO_BACK", "AWAY_IS_BACK_TO_BACK"]
 
+# Present in the dataset, deliberately not trained on. These are real,
+# validated pre-game features that improve spread MAE by ~5.8% (see
+# CLAUDE.md), but live_features.py cannot compute them for an unplayed game,
+# so they stay out of FEATURE_COLUMNS until a live roster source exists.
+# Named explicitly rather than ignored, so the guard below still catches a
+# column nobody has thought about.
+UNUSED_FEATURE_COLUMNS = [
+    "HOME_ABSENT_COUNT",
+    "AWAY_ABSENT_COUNT",
+    "HOME_WEIGHTED_ABSENT_MIN",
+    "AWAY_WEIGHTED_ABSENT_MIN",
+]
+
 # Ids and post-game outcomes. Everything else in the file must be a feature;
 # load_dataset() checks this.
 ID_COLUMNS = [
@@ -115,7 +128,14 @@ def load_dataset() -> pd.DataFrame:
     for col in BOOLEAN_FEATURE_COLUMNS:
         df[col] = df[col].astype(int)
 
-    unaccounted = set(df.columns) - set(FEATURE_COLUMNS) - set(ID_COLUMNS) - set(LABEL_COLUMNS) - {"SEASON"}
+    unaccounted = (
+        set(df.columns)
+        - set(FEATURE_COLUMNS)
+        - set(ID_COLUMNS)
+        - set(LABEL_COLUMNS)
+        - set(UNUSED_FEATURE_COLUMNS)
+        - {"SEASON"}
+    )
     missing = set(FEATURE_COLUMNS) - set(df.columns)
     if unaccounted or missing:
         raise ValueError(
