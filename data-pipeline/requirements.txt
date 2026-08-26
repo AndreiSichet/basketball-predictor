@@ -4,3 +4,13 @@ requests
 beautifulsoup4
 scikit-learn
 nba_api
+# Fetches and parses the NBA's official injury report PDFs, for live
+# availability at serving time. Not hand-rolled because those PDFs separate
+# columns by position rather than by any character, and wrapped "Reason"
+# text extracts out of visual order - a player's reason can appear before
+# that player's own name. Verified against the 2026-03-14 07:15 ET report.
+#
+# Pulls tabula-py, which shells out to a Java runtime. Already satisfied on
+# this machine by the JDK installed for the Spring Boot backend (see §4), so
+# no extra setup - but it is a real dependency on a fresh environment.
+nbainjuries
