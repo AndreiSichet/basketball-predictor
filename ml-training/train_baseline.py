@@ -51,8 +51,17 @@ BOOLEAN_FEATURE_COLUMNS = ["HOME_IS_BACK_TO_BACK", "AWAY_IS_BACK_TO_BACK"]
 # of the live-injury-report work, so listing them would tell the guard below
 # to ignore columns that are genuinely in use - defeating its purpose.
 # The mechanism stays for the next feature that needs to land in the dataset
-# before it lands in the model.
-UNUSED_FEATURE_COLUMNS = []
+# before it lands in the model - which is exactly what the rating columns
+# below are: all 20 advanced-stat columns are present in model_dataset.csv
+# and deliberately held out of FEATURE_COLUMNS. Two experiments (the full
+# 5-metric bundle, then a PACE/TS_PCT-only subset) showed no gain over the
+# 38-feature set, so the data stays built but unused. See CLAUDE.md.
+UNUSED_FEATURE_COLUMNS = [
+    f"{side}_{window}_{metric}"
+    for side in ("HOME", "AWAY")
+    for window in ("ROLL5", "ROLL10")
+    for metric in ("OFF_RATING", "DEF_RATING", "NET_RATING", "PACE", "TS_PCT")
+]
 
 # Ids and post-game outcomes. Everything else in the file must be a feature;
 # load_dataset() checks this.
