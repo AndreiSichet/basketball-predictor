@@ -63,6 +63,24 @@ UNUSED_FEATURE_COLUMNS = [
     for metric in ("OFF_RATING", "DEF_RATING", "NET_RATING", "PACE", "TS_PCT")
 ]
 
+# The Q1/first-half rolling columns, held out for the same reason and by the
+# same mechanism. They are built, validated and merged, but no model here
+# consumes them: whether trailing quarter form earns a place in
+# FEATURE_COLUMNS is what train_quarter_half_baseline.py exists to measure,
+# and this project decides that with evidence rather than in advance.
+#
+# Held out of the SHARED list is not the same as unavailable: that script
+# reads these columns straight out of model_dataset.csv by name, which is
+# exactly why they have to be merged in even while unused here. Adding them
+# to FEATURE_COLUMNS instead would silently change all 7 shipped models.
+UNUSED_FEATURE_COLUMNS += [
+    f"{side}_{window}_{metric}"
+    for side in ("HOME", "AWAY")
+    for window in ("ROLL5", "ROLL10")
+    for metric in ("Q1_MARGIN", "Q1_PTS", "Q1_PTS_ALLOWED",
+                   "HALF1_MARGIN", "HALF1_PTS", "HALF1_PTS_ALLOWED")
+]
+
 # Ids and post-game outcomes. Everything else in the file must be a feature;
 # load_dataset() checks this.
 ID_COLUMNS = [
@@ -89,6 +107,19 @@ LABEL_COLUMNS = [
     "AWAY_AST",
     "AST_MARGIN",
     "TOTAL_AST",
+    # Q1 and 1H markets. Labels only - no model trains on them yet, but they
+    # must be classified here or load_dataset()'s guard rejects the file for
+    # every script that shares it, this one included.
+    "HOME_Q1_PTS",
+    "AWAY_Q1_PTS",
+    "HOME_Q1_MARGIN",
+    "TOTAL_Q1_PTS",
+    "HOME_Q1_WIN",
+    "HOME_HALF1_PTS",
+    "AWAY_HALF1_PTS",
+    "HOME_HALF1_MARGIN",
+    "TOTAL_HALF1_PTS",
+    "HOME_HALF1_WIN",
 ]
 
 METRIC_PRECISION = {"Accuracy": 4, "Log loss": 4, "MAE": 2, "RMSE": 2}

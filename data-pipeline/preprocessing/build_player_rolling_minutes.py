@@ -1,52 +1,55 @@
 """
 Combine every player box score into one table and add each player's
-trailing 10-game average minutes.
+trailing per-game averages.
 
   input:  data/raw/player_boxscores/*.csv  (13,199 files)
           data/processed/games_final.csv   (for GAME_DATE)
   output: data/processed/player_boxscores_with_rolling.csv
 
-This is the foundation for the availability features: before you can say "a
-normally-important player is missing", you need to know how important that
-player normally was, measured strictly from games already played.
+Originally built for ROLL10_MIN alone, to weight the team-level absence
+features. Now generalised to the stats player props are priced on:
+minutes, points, rebounds, assists, threes, and PRA. The rolling logic is
+one code path applied to every column - not five near-copies - because the
+decisions it encodes were argued out once and should not be re-litigated
+per stat.
 
 Same shift-then-roll discipline as build_rolling_features.py, and the same
-season reset, for the same reasons: shift(1) so a game's own minutes never
-leak into its own feature, and a reset because a player's role genuinely
+season reset, for the same reasons: shift(1) so a game's own line never
+leaks into its own feature, and a reset because a player's role genuinely
 changes between seasons - trades, new teams, new depth charts.
 
-TWO COLUMNS, TWO DIFFERENT QUESTIONS - the distinction matters:
+TWO KINDS OF COLUMN, TWO DIFFERENT QUESTIONS:
 
-  MIN_NUMERIC is NaN when a player did not appear. It records what
-  happened, and "did not play" is not "played zero minutes", the same
-  distinction the raw files are careful about.
+  MIN_NUMERIC, PTS, REB, AST, FG3M and PRA are NaN when a player did not
+  appear. They record what happened, and "did not play" is not "scored
+  zero" - the same distinction the raw files are careful about.
 
-  ROLL10_MIN answers "when this player is available, how many minutes does
-  he play". It is computed over PLAYED GAMES ONLY - the window means the
-  last 10 games he actually appeared in, not the last 10 calendar games -
-  and then carried forward across the games he missed, so every row has a
-  current known role to look up.
+  The ROLL5_/ROLL10_ columns answer "when this player is available, what
+  does he produce". They are computed over PLAYED GAMES ONLY - the window
+  means his last N appearances, not his last N calendar games - and then
+  carried forward across the games he missed, so every row has a current
+  known level to look up.
 
-WHY PLAYED-GAMES-ONLY, and not "count an absence as zero minutes":
+WHY PLAYED-GAMES-ONLY, and not "count an absence as zero": a starter who
+missed five of his last ten team games would average out to half his real
+output, so a team missing him would be measured as missing half a player.
+A chronically injured starter being out again is a bigger problem, not a
+shrinking one. Rolling over NaN directly is not an option either - pandas'
+default min_periods equals the window, so a single NaN inside it yields
+NaN, and 17.3% of player-rows are absences.
 
-  Take a starter who missed 5 of his last 10 team games. Counting absences
-  as zero averages him to ~15 minutes; over his last 10 played games he
-  averages ~30. If he is out again today, the team-level absence feature
-  would credit the team with missing 15 minutes instead of 30 - and that
-  runs backwards. A chronically injured star being out again is a bigger
-  problem, not a shrinking one. Counting absences as zero lets a player's
-  own injury history quietly deflate the measured cost of his next absence.
+PRA IS ROLLED, NOT RECONSTRUCTED. PRA = PTS + REB + AST is computed
+per game, before rolling, and then rolled like any other column. Averaging
+is linear, so ROLL10_PRA must equal ROLL10_PTS + ROLL10_REB + ROLL10_AST
+exactly - the run checks that on every row. It is not a redundant check:
+the three parts and the whole travel through the same shift, the same
+window and the same forward fill, so a disagreement means the rolling
+logic itself is wrong, not that this one derived column is off.
 
-  Rolling over MIN_NUMERIC directly is not an option either: pandas'
-  default min_periods equals the window, so a single NaN inside it yields
-  NaN, and 17.3% of player-rows are absences. The column would be NaN for
-  most rows, and specifically NaN right after a player had been missing.
-
-NaN CONVENTION: a row is NaN until the player has 11 played games in that
-season - the first ten build the window, and the eleventh is the first game
-with a full trailing window behind it. Absence rows before that point are
-NaN too, since there is no known role to carry forward yet. Same
-"insufficient history" convention as every other rolling feature here.
+NaN CONVENTION: a row is NaN until the player has (window + 1) appearances
+that season - the first N build the window, and the next is the first game
+with a full trailing window behind it. Same "insufficient history" rule as
+every other rolling feature here.
 
 GAME_ID stays a zero-padded 10-character string in the output. Read this
 file back with dtype={"GAME_ID": str} - a default read turns it into an
@@ -67,18 +70,42 @@ from fetch_player_boxscores import (  # noqa: E402
     has_played,
 )
 
-# derive_season is a sibling in this directory: the August boundary stays
-# defined in exactly one place, as it already is for team features.
-from build_rolling_features import derive_season  # noqa: E402
+# WINDOWS and the season boundary come from the team-level rolling script,
+# so both stay defined in exactly one place.
+from build_rolling_features import WINDOWS, derive_season  # noqa: E402
 
 PROCESSED_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "processed"
 GAMES_FINAL_PATH = PROCESSED_DATA_DIR / "games_final.csv"
 OUTPUT_PATH = PROCESSED_DATA_DIR / "player_boxscores_with_rolling.csv"
 
-ROLLING_WINDOW = 10
-ROLLING_COLUMN = f"ROLL{ROLLING_WINDOW}_MIN"
+# Raw counting stats taken straight from the box score. FG3M is threes
+# made; the raw files also carry FG3A, which props are not priced on.
+COUNTING_STATS = ["PTS", "REB", "AST", "FG3M"]
+
+# Derived per game, before any rolling. See the module docstring.
+PRA_COLUMN = "PRA"
+
+# Source column -> the suffix used in ROLL5_/ROLL10_ names. MIN_NUMERIC is
+# the parsed form of the "MM:SS" string, and keeps the shorter MIN suffix
+# so ROLL10_MIN stays exactly the name the availability features already
+# depend on.
+ROLLING_SOURCES = {
+    "MIN_NUMERIC": "MIN",
+    "PTS": "PTS",
+    "REB": "REB",
+    "AST": "AST",
+    "FG3M": "FG3M",
+    PRA_COLUMN: "PRA",
+}
+
 PLAYER_SEASON_KEYS = ["PLAYER_ID", "SEASON"]
 SORT_KEYS = ["PLAYER_ID", "SEASON", "GAME_DATE", "GAME_ID"]
+
+# ROLL10_MIN feeds team_availability.csv and, through it, the shipped
+# 38-feature models. If a rewrite of this script ever changes it, that is a
+# silent break in production, so the previous output is diffed before this
+# one replaces it.
+REGRESSION_GUARD_COLUMN = "ROLL10_MIN"
 
 PROGRESS_EVERY = 2000
 
@@ -160,38 +187,74 @@ def parse_minutes(players: pd.DataFrame) -> pd.DataFrame:
     return players
 
 
-def add_rolling_minutes(players: pd.DataFrame) -> pd.DataFrame:
-    """Trailing average over played games, carried across absences."""
-    players = players.sort_values(SORT_KEYS).reset_index(drop=True)
-    played = players["MIN_NUMERIC"].notna()
+def parse_counting_stats(players: pd.DataFrame) -> pd.DataFrame:
+    """Numeric PTS/REB/AST/FG3M plus PRA, all NaN where the player sat.
 
-    # Roll over the played rows only, so the window is "his last 10
-    # appearances", never diluted by games he sat out.
-    played_only = players.loc[played]
-    rolled = played_only.groupby(PLAYER_SEASON_KEYS)["MIN_NUMERIC"].transform(
-        lambda s: s.shift(1).rolling(ROLLING_WINDOW).mean()
-    )
+    The raw files store these as text and blank them for absent players, so
+    to_numeric already yields NaN in the right places. The mask is applied
+    anyway and then cross-checked: a row that claims minutes but has no
+    points is a data problem worth stopping on, not rounding past.
+    """
+    played = has_played(players["MIN"])
 
-    players[ROLLING_COLUMN] = float("nan")
-    players.loc[played, ROLLING_COLUMN] = rolled
+    for column in COUNTING_STATS:
+        players[column] = pd.to_numeric(players[column], errors="coerce")
+        players.loc[~played, column] = float("nan")
 
-    # Carry the last known role across the games he missed, so an absence
-    # row still says what the team is missing. Rows are already sorted by
-    # date within each player-season, which is what makes ffill correct.
-    players[ROLLING_COLUMN] = players.groupby(PLAYER_SEASON_KEYS)[
-        ROLLING_COLUMN
-    ].ffill()
+        unparsed = played & players[column].isna()
+        if unparsed.any():
+            raise RuntimeError(
+                f"{int(unparsed.sum()):,} rows played but have no parseable "
+                f"{column}. MIN and the counting stats must agree about whether "
+                f"a player appeared."
+            )
+
+    # Computed per game, before rolling - see the module docstring.
+    players[PRA_COLUMN] = players["PTS"] + players["REB"] + players["AST"]
 
     return players
 
 
-def expected_nan_count(players: pd.DataFrame) -> int:
+def add_rolling(players: pd.DataFrame) -> pd.DataFrame:
+    """Trailing averages over played games, carried across absences.
+
+    One code path for every stat and every window. The played mask is
+    identical across stats (it comes from MIN), so each column's warm-up
+    and forward fill line up exactly - which is what makes the PRA
+    linearity check below meaningful rather than trivially true.
+    """
+    players = players.sort_values(SORT_KEYS).reset_index(drop=True)
+    played = players["MIN_NUMERIC"].notna()
+    played_only = players.loc[played]
+
+    for window in WINDOWS:
+        for source, suffix in ROLLING_SOURCES.items():
+            column = f"ROLL{window}_{suffix}"
+
+            # Roll over played rows only, so the window is "his last N
+            # appearances", never diluted by games he sat out.
+            rolled = played_only.groupby(PLAYER_SEASON_KEYS)[source].transform(
+                lambda s, w=window: s.shift(1).rolling(w).mean()
+            )
+
+            players[column] = float("nan")
+            players.loc[played, column] = rolled
+
+            # Carry the last known level across games he missed. Rows are
+            # already sorted by date within each player-season, which is
+            # what makes ffill correct here.
+            players[column] = players.groupby(PLAYER_SEASON_KEYS)[column].ffill()
+
+    return players
+
+
+def expected_nan_count(players: pd.DataFrame, window: int) -> int:
     """How many rows must be NaN, derived rather than eyeballed.
 
-    After the forward fill, a row's value is the value of the most recent
-    played row at or before it, and a played row only has a value once it
-    is that player-season's 11th appearance. So a row is NaN exactly when
-    ten or fewer played games have occurred up to and including it -
+    After the forward fill, a row's value is that of the most recent played
+    row at or before it, and a played row only has a value once it is that
+    player-season's (window + 1)th appearance. So a row is NaN exactly when
+    `window` or fewer appearances have occurred up to and including it -
     which covers absence rows and short player-seasons without any special
     casing.
     """
@@ -199,45 +262,74 @@ def expected_nan_count(players: pd.DataFrame) -> int:
     appearances_so_far = played.groupby(
         [players["PLAYER_ID"], players["SEASON"]]
     ).cumsum()
-    return int((appearances_so_far <= ROLLING_WINDOW).sum())
+    return int((appearances_so_far <= window).sum())
 
 
-def report_staleness(players: pd.DataFrame):
-    """How far back does a carried-forward value actually reach?
+def check_pra_linearity(players: pd.DataFrame) -> bool:
+    """ROLL{w}_PRA must equal ROLL{w}_PTS + ROLL{w}_REB + ROLL{w}_AST.
 
-    Informational only. A player on a long-term injury could inherit a role
-    measured before the injury started; this measures whether that is a
-    real pattern in the data or a theoretical worry.
+    Exhaustive, not sampled. Averaging is linear and all four columns share
+    the same window, the same played rows and the same forward fill, so any
+    disagreement points at the rolling machinery rather than at PRA.
     """
-    played = players["MIN_NUMERIC"].notna()
+    print("\n  PRA linearity (mean is linear, so this must hold exactly):")
+    all_ok = True
 
-    last_played_date = players["GAME_DATE"].where(played)
-    last_played_date = last_played_date.groupby(
-        [players["PLAYER_ID"], players["SEASON"]]
-    ).ffill()
+    for window in WINDOWS:
+        direct = players[f"ROLL{window}_PRA"]
+        summed = (players[f"ROLL{window}_PTS"]
+                  + players[f"ROLL{window}_REB"]
+                  + players[f"ROLL{window}_AST"])
 
-    position = players.groupby(PLAYER_SEASON_KEYS).cumcount()
-    last_played_position = position.where(played).groupby(
-        [players["PLAYER_ID"], players["SEASON"]]
-    ).ffill()
+        both_nan = direct.isna() & summed.isna()
+        difference = (direct - summed).abs()
+        worst = float(difference.max(skipna=True))
+        disagreeing = int((~both_nan & ~(difference < 1e-9)).sum())
 
-    carried = (~played) & players[ROLLING_COLUMN].notna()
-    gap_days = (players["GAME_DATE"] - last_played_date).dt.days[carried]
-    gap_games = (position - last_played_position)[carried]
+        all_ok &= disagreeing == 0
+        print(f"    ROLL{window}_PRA vs sum of parts: {disagreeing:,} disagreeing rows, "
+              f"largest difference {worst:.2e}  {'OK' if disagreeing == 0 else 'FAIL'}")
 
-    print("\n" + "=" * 66)
-    print("STALENESS OF CARRIED-FORWARD VALUES (informational)")
-    print("=" * 66)
-    print(f"  absence rows with a carried value: {int(carried.sum()):,}")
-    print("\n  gap back to the last game the player actually played:")
-    print(f"    {'':<10}{'days':>10}{'team games':>14}")
-    for label, q in (("median", 0.50), ("75th", 0.75), ("90th", 0.90),
-                     ("99th", 0.99), ("max", 1.00)):
-        print(f"    {label:<10}{gap_days.quantile(q):>10.0f}{gap_games.quantile(q):>14.0f}")
+    return all_ok
 
-    for threshold in (10, 20, 40):
-        share = (gap_games > threshold).mean() * 100
-        print(f"    carried across more than {threshold:>2} team games: {share:5.2f}%")
+
+def check_minutes_regression(players: pd.DataFrame) -> None:
+    """ROLL10_MIN must be byte-identical to the previous run's.
+
+    team_availability.csv and the shipped 38-feature models were built from
+    it. Generalising this script must not move it, so the old output is
+    diffed before it is replaced.
+    """
+    if not OUTPUT_PATH.exists():
+        print(f"\n  {REGRESSION_GUARD_COLUMN} regression check: no previous output "
+              f"to compare against (first run).")
+        return
+
+    # Both keys are read as text, matching the freshly-computed side, which
+    # comes from load_all_boxscores() and is therefore str throughout.
+    # Reading PLAYER_ID as Int64 here is what broke the first run: pandas
+    # refuses to merge an object key against an Int64 one. Same root cause
+    # as the GAME_ID zero-padding trap - a merge key whose dtype was
+    # inferred on one side and declared on the other.
+    previous = pd.read_csv(
+        OUTPUT_PATH,
+        usecols=["GAME_ID", "PLAYER_ID", REGRESSION_GUARD_COLUMN],
+        dtype={"GAME_ID": str, "PLAYER_ID": str},
+    )
+    merged = players[["GAME_ID", "PLAYER_ID", REGRESSION_GUARD_COLUMN]].merge(
+        previous, on=["GAME_ID", "PLAYER_ID"], how="inner",
+        suffixes=("_new", "_old"), validate="one_to_one",
+    )
+
+    new = merged[f"{REGRESSION_GUARD_COLUMN}_new"]
+    old = merged[f"{REGRESSION_GUARD_COLUMN}_old"]
+    both_nan = new.isna() & old.isna()
+    differing = int((~both_nan & ~((new - old).abs() < 1e-9)).sum())
+
+    print(f"\n  {REGRESSION_GUARD_COLUMN} regression check "
+          f"(availability features depend on this):")
+    print(f"    rows compared: {len(merged):,}   differing: {differing:,}  "
+          f"{'UNCHANGED' if differing == 0 else 'CHANGED - investigate'}")
 
 
 def main():
@@ -245,32 +337,58 @@ def main():
     players = attach_game_date(players)
     players["SEASON"] = derive_season(players["GAME_DATE"])
     players = parse_minutes(players)
-    players = add_rolling_minutes(players)
+    players = parse_counting_stats(players)
+    players = add_rolling(players)
 
-    output_columns = TARGET_COLUMNS + [
-        "GAME_DATE", "SEASON", "MIN_NUMERIC", ROLLING_COLUMN
+    rolling_columns = [
+        f"ROLL{window}_{suffix}"
+        for window in WINDOWS
+        for suffix in ROLLING_SOURCES.values()
     ]
+    output_columns = (
+        TARGET_COLUMNS
+        + ["GAME_DATE", "SEASON", "MIN_NUMERIC", PRA_COLUMN]
+        + rolling_columns
+    )
     players = players[output_columns]
+
+    check_minutes_regression(players)
 
     PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
     players.to_csv(OUTPUT_PATH, index=False, encoding="utf-8")
 
-    expected = expected_nan_count(players)
-    actual = int(players[ROLLING_COLUMN].isna().sum())
-
     print(f"\nWrote {OUTPUT_PATH}")
     print(f"  rows              : {len(players):,}")
-    print(f"  columns           : {len(players.columns)}")
+    print(f"  columns           : {len(players.columns)} "
+          f"({len(rolling_columns)} rolling)")
     print(f"  date range        : {players['GAME_DATE'].min().date()} "
           f"-> {players['GAME_DATE'].max().date()}")
     print(f"  unique players    : {players['PLAYER_ID'].nunique():,}")
     print(f"  player-seasons    : {players.groupby(PLAYER_SEASON_KEYS).ngroups:,}")
     print(f"  rows with minutes : {int(players['MIN_NUMERIC'].notna().sum()):,}")
-    print(f"\n  {ROLLING_COLUMN} NaN : {actual:,}")
-    print(f"  expected          : {expected:,}  -> "
-          f"{'MATCH' if actual == expected else 'MISMATCH'}")
 
-    report_staleness(players)
+    print("\n  NaN counts (early-season warm-up, by design):")
+    all_match = True
+    for window in WINDOWS:
+        expected = expected_nan_count(players, window)
+        for suffix in ROLLING_SOURCES.values():
+            column = f"ROLL{window}_{suffix}"
+            actual = int(players[column].isna().sum())
+            ok = actual == expected
+            all_match &= ok
+            print(f"    {column:<16} {actual:>7,}  expected {expected:>7,}  "
+                  f"{'OK' if ok else 'MISMATCH'}")
+    print(f"\n  all NaN counts as predicted: {all_match}")
+
+    linear_ok = check_pra_linearity(players)
+
+    print("\n  Preview (a player past the ROLL10 warm-up):")
+    preview = players[players["ROLL10_PRA"].notna()].head(6)
+    print(preview[["GAME_DATE", "PLAYER_NAME", "MIN", "PTS", "REB", "AST", "PRA",
+                   "ROLL5_PTS", "ROLL10_PTS", "ROLL10_PRA"]].to_string(index=False))
+
+    if not (all_match and linear_ok):
+        raise SystemExit("Checks failed - see above.")
 
 
 if __name__ == "__main__":

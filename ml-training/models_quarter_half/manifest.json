@@ -1,0 +1,149 @@
+{
+  "feature_columns": [
+    "HOME_ROLL5_Q1_MARGIN",
+    "HOME_ROLL5_Q1_PTS",
+    "HOME_ROLL5_Q1_PTS_ALLOWED",
+    "HOME_ROLL5_HALF1_MARGIN",
+    "HOME_ROLL5_HALF1_PTS",
+    "HOME_ROLL5_HALF1_PTS_ALLOWED",
+    "HOME_ROLL10_Q1_MARGIN",
+    "HOME_ROLL10_Q1_PTS",
+    "HOME_ROLL10_Q1_PTS_ALLOWED",
+    "HOME_ROLL10_HALF1_MARGIN",
+    "HOME_ROLL10_HALF1_PTS",
+    "HOME_ROLL10_HALF1_PTS_ALLOWED",
+    "AWAY_ROLL5_Q1_MARGIN",
+    "AWAY_ROLL5_Q1_PTS",
+    "AWAY_ROLL5_Q1_PTS_ALLOWED",
+    "AWAY_ROLL5_HALF1_MARGIN",
+    "AWAY_ROLL5_HALF1_PTS",
+    "AWAY_ROLL5_HALF1_PTS_ALLOWED",
+    "AWAY_ROLL10_Q1_MARGIN",
+    "AWAY_ROLL10_Q1_PTS",
+    "AWAY_ROLL10_Q1_PTS_ALLOWED",
+    "AWAY_ROLL10_HALF1_MARGIN",
+    "AWAY_ROLL10_HALF1_PTS",
+    "AWAY_ROLL10_HALF1_PTS_ALLOWED",
+    "HOME_TEAM_ELO",
+    "AWAY_TEAM_ELO",
+    "HOME_REST_DAYS",
+    "AWAY_REST_DAYS",
+    "HOME_IS_BACK_TO_BACK",
+    "AWAY_IS_BACK_TO_BACK"
+  ],
+  "n_features": 30,
+  "requires_complete_features": true,
+  "note": "Linear models - a row with any NaN feature cannot be scored and must be refused, not imputed.",
+  "models": [
+    {
+      "key": "q1_spread",
+      "label": "Q1 spread",
+      "target": "HOME_Q1_MARGIN",
+      "task": "regression",
+      "model_class": "LinearRegression",
+      "training_rows": 11408,
+      "file": "q1_spread.joblib",
+      "confidence": "medium",
+      "confidence_note": "A real, modest gain over the naive baseline. No model in this set is strong; none beat a linear fit.",
+      "selection": {
+        "metric": "MAE",
+        "naive": 7.03,
+        "model": 6.61
+      },
+      "conditional_on_decided_period": false,
+      "saved": "OK"
+    },
+    {
+      "key": "q1_total",
+      "label": "Q1 total",
+      "target": "TOTAL_Q1_PTS",
+      "task": "regression",
+      "model_class": "LinearRegression",
+      "training_rows": 11408,
+      "file": "q1_total.joblib",
+      "confidence": "medium",
+      "confidence_note": "A real, modest gain over the naive baseline. No model in this set is strong; none beat a linear fit.",
+      "selection": {
+        "metric": "MAE",
+        "naive": 6.88,
+        "model": 6.58
+      },
+      "conditional_on_decided_period": false,
+      "saved": "OK"
+    },
+    {
+      "key": "1h_spread",
+      "label": "1H spread",
+      "target": "HOME_HALF1_MARGIN",
+      "task": "regression",
+      "model_class": "LinearRegression",
+      "training_rows": 11408,
+      "file": "1h_spread.joblib",
+      "confidence": "medium",
+      "confidence_note": "A real, modest gain over the naive baseline. No model in this set is strong; none beat a linear fit.",
+      "selection": {
+        "metric": "MAE",
+        "naive": 9.59,
+        "model": 8.91
+      },
+      "conditional_on_decided_period": false,
+      "saved": "OK"
+    },
+    {
+      "key": "1h_total",
+      "label": "1H total",
+      "target": "TOTAL_HALF1_PTS",
+      "task": "regression",
+      "model_class": "LinearRegression",
+      "training_rows": 11408,
+      "file": "1h_total.joblib",
+      "confidence": "medium",
+      "confidence_note": "A real, modest gain over the naive baseline. No model in this set is strong; none beat a linear fit.",
+      "selection": {
+        "metric": "MAE",
+        "naive": 10.2,
+        "model": 9.78
+      },
+      "conditional_on_decided_period": false,
+      "saved": "OK"
+    },
+    {
+      "key": "q1_winner",
+      "label": "Q1 winner",
+      "target": "HOME_Q1_WIN",
+      "task": "classification",
+      "model_class": "LogisticRegression",
+      "training_rows": 10890,
+      "file": "q1_winner.joblib",
+      "confidence": "low",
+      "confidence_note": "Barely above the naive baseline - a single quarter is mostly short-window variance. Present with a visible caveat.",
+      "selection": {
+        "metric": "accuracy",
+        "naive": 0.5184,
+        "model": 0.5796,
+        "log_loss": 0.667
+      },
+      "conditional_on_decided_period": true,
+      "saved": "OK"
+    },
+    {
+      "key": "1h_winner",
+      "label": "1H winner",
+      "target": "HOME_HALF1_WIN",
+      "task": "classification",
+      "model_class": "LogisticRegression",
+      "training_rows": 11046,
+      "file": "1h_winner.joblib",
+      "confidence": "medium",
+      "confidence_note": "A real, modest gain over the naive baseline. No model in this set is strong; none beat a linear fit.",
+      "selection": {
+        "metric": "accuracy",
+        "naive": 0.5291,
+        "model": 0.6343,
+        "log_loss": 0.6462
+      },
+      "conditional_on_decided_period": true,
+      "saved": "OK"
+    }
+  ]
+}

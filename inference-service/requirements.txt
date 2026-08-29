@@ -5,7 +5,15 @@ xgboost
 # as XGBClassifier/XGBRegressor rather than raw Booster, and XGBModel.__init__
 # raises "sklearn needs to be installed" without it. Easy to miss locally,
 # where the shared dev venv already has it for ml-training.
-scikit-learn
+#
+# PINNED, and the pin is load-bearing rather than tidiness. The six
+# quarter/half models in ml-training/models_quarter_half/ are .joblib
+# pickles of sklearn Pipeline objects, so they are coupled to the version
+# that wrote them in a way XGBoost's .json format is not - a mismatched
+# sklearn can refuse to unpickle them, or warn and load something subtly
+# different. 1.9.0 is what produced those artifacts. Re-run
+# finalize_quarter_half_models.py if this is ever bumped.
+scikit-learn==1.9.0
 pandas
 numpy
 nba_api
