@@ -28,9 +28,38 @@ COPY data-pipeline/preprocessing/build_elo_ratings.py \
      data-pipeline/preprocessing/build_rolling_features.py \
      ./data-pipeline/preprocessing/
 
-# The history table the service serves from. Baked into the image, so a
+# Quarter/half and player props. train_baseline.py and
+# train_quarter_half_baseline.py are here not because anything trains in
+# this image, but because the feature modules import the column lists and
+# the season split from the scripts that DEFINED them rather than keeping a
+# second copy - the same reason live_features.py reaches into the pipeline.
+COPY ml-training/train_baseline.py \
+     ml-training/train_quarter_half_baseline.py \
+     ml-training/live_quarter_half_features.py \
+     ml-training/live_player_features.py \
+     ./ml-training/
+COPY ml-training/models_quarter_half/ ./ml-training/models_quarter_half/
+COPY ml-training/models_player_props/ ./ml-training/models_player_props/
+COPY data-pipeline/preprocessing/build_quarter_half_rolling.py \
+     data-pipeline/preprocessing/build_player_dataset.py \
+     data-pipeline/preprocessing/build_player_rolling_minutes.py \
+     ./data-pipeline/preprocessing/
+# build_player_rolling_minutes imports the canonical box-score schema and
+# has_played() from the fetcher; nothing in the image ever calls the API.
+COPY data-pipeline/ingestion/fetch_player_boxscores.py ./data-pipeline/ingestion/
+
+# The history tables the service serves from. Baked into the image, so a
 # pipeline rerun means a rebuild - see the note in CLAUDE.md section 11.
-COPY data-pipeline/data/processed/games_final.csv ./data-pipeline/data/processed/
+#
+# SIZE WARNING: player_boxscores_with_rolling.csv is 77 MB, more than ten
+# times games_final.csv, and it is loaded into memory at startup. This is
+# the single largest thing this image carries and the reason it is no
+# longer small. A mounted volume or an object-store fetch is the real
+# answer once the pipeline runs on a schedule.
+COPY data-pipeline/data/processed/games_final.csv \
+     data-pipeline/data/processed/quarter_half_raw.csv \
+     data-pipeline/data/processed/player_boxscores_with_rolling.csv \
+     ./data-pipeline/data/processed/
 
 WORKDIR /app/inference-service
 

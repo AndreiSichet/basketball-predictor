@@ -103,6 +103,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # player_boxscores_with_rolling.csv is stored in Git LFS.
+          # Without this, checkout leaves a ~130-byte pointer file
+          # where a 77 MB CSV should be, and the failure is confusing:
+          # pandas reports a malformed CSV, or COPY succeeds with
+          # garbage. Only the two jobs that read it pay the download.
+          lfs: true
 
       # 3.14 to match inference-service/Dockerfile.
       - uses: actions/setup-python@v5
@@ -116,9 +123,14 @@ jobs:
 
       # A real boot, not an import check. Two bugs this project already hit
       # only show up here: a missing scikit-learn (xgboost's sklearn API
-      # raises on XGBClassifier(), so models_loaded never reaches 7) and a
+      # raises on XGBClassifier(), so the team count never reaches 7) and a
       # broken uvicorn entry point (nothing ever answers on the port).
-      # Needs the committed games_final.csv and the 7 model .json files.
+      #
+      # Needs FOUR things committed, not one: games_final.csv, the 7 model
+      # .json files, and now quarter_half_raw.csv plus
+      # player_boxscores_with_rolling.csv with their two model directories.
+      # Every one of them is read at startup, so a missing file is a failed
+      # boot rather than a lazy error later.
       - name: Boot the service and check health
         working-directory: inference-service
         run: |
@@ -137,7 +149,11 @@ jobs:
           fi
 
           cat health.json
-          python -c "import json; h = json.load(open('health.json')); assert h['status'] == 'ok', h; assert h['models_loaded'] == 7, h; print('health OK:', h)"
+          # models_loaded is a per-family dict, not an int. Each family is
+          # asserted separately for the reason the shape changed: one
+          # aggregate would still look plausible if a family loaded twice
+          # and another not at all.
+          python -c "import json; h = json.load(open('health.json')); assert h['status'] == 'ok', h; m = h['models_loaded']; assert m == {'team': 7, 'quarter_half': 6, 'player_props': 10}, m; print('health OK:', h)"
 
           kill "$UVICORN_PID"
 
@@ -147,6 +163,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # player_boxscores_with_rolling.csv is stored in Git LFS.
+          # Without this, checkout leaves a ~130-byte pointer file
+          # where a 77 MB CSV should be, and the failure is confusing:
+          # pandas reports a malformed CSV, or COPY succeeds with
+          # garbage. Only the two jobs that read it pay the download.
+          lfs: true
 
       # Build only. This asks whether every Dockerfile still produces a
       # valid image, which is a different question from whether the stack

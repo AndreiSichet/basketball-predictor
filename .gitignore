@@ -16,6 +16,21 @@ data-pipeline/data/processed/*
 # (games_master, games_with_rolling, games_with_features, model_dataset)
 # is still regenerable pipeline output and stays ignored.
 !data-pipeline/data/processed/games_final.csv
+# THE SAME RECLASSIFICATION, TWICE MORE. Both of these are read at startup
+# by the inference service and copied by its Dockerfile, so they are
+# runtime dependencies rather than regenerable output - exactly what
+# games_final.csv turned out to be, and what ml-training/models/*.json
+# turned out to be before that. See the standing rule in CLAUDE.md section
+# 4: a file added to a Dockerfile COPY list must have its git-tracking
+# status checked in the same change, because a green local build proves
+# nothing about a fresh clone.
+#
+# player_boxscores_with_rolling.csv is 77 MB and goes through Git LFS (see
+# .gitattributes). It is listed here as a normal exception; LFS intercepts
+# it transparently on `git add`. CI needs `lfs: true` on actions/checkout
+# or it receives a pointer file instead of the data.
+!data-pipeline/data/processed/quarter_half_raw.csv
+!data-pipeline/data/processed/player_boxscores_with_rolling.csv
 ml-training/models/*
 !ml-training/models/.gitkeep
 # The 7 production models are a runtime dependency, not build output: the
