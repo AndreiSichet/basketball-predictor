@@ -1,0 +1,142 @@
+{
+  "feature_columns": [
+    "ROLL5_MIN",
+    "ROLL5_PTS",
+    "ROLL5_REB",
+    "ROLL5_AST",
+    "ROLL5_FG3M",
+    "ROLL5_PRA",
+    "ROLL10_MIN",
+    "ROLL10_PTS",
+    "ROLL10_REB",
+    "ROLL10_AST",
+    "ROLL10_FG3M",
+    "ROLL10_PRA",
+    "IS_HOME",
+    "REST_DAYS",
+    "IS_BACK_TO_BACK",
+    "TEAM_ELO",
+    "OPPONENT_ELO"
+  ],
+  "n_features": 17,
+  "routing": {
+    "decide_on": [
+      "ROLL5_MIN",
+      "ROLL5_PTS",
+      "ROLL5_REB",
+      "ROLL5_AST",
+      "ROLL5_FG3M",
+      "ROLL5_PRA",
+      "ROLL10_MIN",
+      "ROLL10_PTS",
+      "ROLL10_REB",
+      "ROLL10_AST",
+      "ROLL10_FG3M",
+      "ROLL10_PRA"
+    ],
+    "rule": "if every column in decide_on is present, use the 'linear' model; otherwise use the 'xgb' model",
+    "linear_requires_complete_features": true,
+    "xgb_handles_missing": true,
+    "why": "The two models are equivalent on accuracy (-0.63% to +0.13% MAE). They differ in coverage: linear was fit on 225,060 rows and rejects NaN, xgb on all 280,943 and does not.",
+    "context_columns_not_in_rule": [
+      "IS_HOME",
+      "REST_DAYS",
+      "IS_BACK_TO_BACK",
+      "TEAM_ELO",
+      "OPPONENT_ELO"
+    ],
+    "context_exclusion_verified": "REST_DAYS can be NaN, so the rule reads 12 of 17 columns. Verified safe: all 319 context-NaN rows are also rolling-incomplete, so none can reach the linear model. Re-checked on every build."
+  },
+  "models": [
+    {
+      "target": "PTS",
+      "label": "Points",
+      "files": {
+        "linear": "pts_linear.joblib",
+        "xgb": "pts_xgb.json"
+      },
+      "training_rows": {
+        "linear": 225060,
+        "xgb": 280943
+      },
+      "model_class": {
+        "linear": "Pipeline(StandardScaler, LinearRegression)",
+        "xgb": "XGBRegressor"
+      },
+      "trees": 158,
+      "saved": true
+    },
+    {
+      "target": "REB",
+      "label": "Rebounds",
+      "files": {
+        "linear": "reb_linear.joblib",
+        "xgb": "reb_xgb.json"
+      },
+      "training_rows": {
+        "linear": 225060,
+        "xgb": 280943
+      },
+      "model_class": {
+        "linear": "Pipeline(StandardScaler, LinearRegression)",
+        "xgb": "XGBRegressor"
+      },
+      "trees": 363,
+      "saved": true
+    },
+    {
+      "target": "AST",
+      "label": "Assists",
+      "files": {
+        "linear": "ast_linear.joblib",
+        "xgb": "ast_xgb.json"
+      },
+      "training_rows": {
+        "linear": 225060,
+        "xgb": 280943
+      },
+      "model_class": {
+        "linear": "Pipeline(StandardScaler, LinearRegression)",
+        "xgb": "XGBRegressor"
+      },
+      "trees": 140,
+      "saved": true
+    },
+    {
+      "target": "FG3M",
+      "label": "Threes made",
+      "files": {
+        "linear": "fg3m_linear.joblib",
+        "xgb": "fg3m_xgb.json"
+      },
+      "training_rows": {
+        "linear": 225060,
+        "xgb": 280943
+      },
+      "model_class": {
+        "linear": "Pipeline(StandardScaler, LinearRegression)",
+        "xgb": "XGBRegressor"
+      },
+      "trees": 144,
+      "saved": true
+    },
+    {
+      "target": "PRA",
+      "label": "Points+Reb+Ast",
+      "files": {
+        "linear": "pra_linear.joblib",
+        "xgb": "pra_xgb.json"
+      },
+      "training_rows": {
+        "linear": 225060,
+        "xgb": 280943
+      },
+      "model_class": {
+        "linear": "Pipeline(StandardScaler, LinearRegression)",
+        "xgb": "XGBRegressor"
+      },
+      "trees": 372,
+      "saved": true
+    }
+  ]
+}
