@@ -157,3 +157,155 @@ h1 {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+/* Tabs and the two dashboards ------------------------------------------ */
+
+/* The hidden attribute is what keeps both panels mounted while only one
+   shows, so switching tabs loses neither the roster fetch nor the current
+   selection. Stated explicitly because a display rule elsewhere could
+   otherwise silently override it. */
+[hidden] {
+  display: none !important;
+}
+
+.dashboard-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0 1rem;
+  border-bottom: 1px solid #d5d5d5;
+}
+
+.dashboard-tabs .tab {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid #d5d5d5;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: #f2f2f2;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.dashboard-tabs .tab.active {
+  background: #fff;
+  font-weight: 600;
+  /* Sits on top of the container's border, so the active tab reads as
+     joined to the panel below it. */
+  margin-bottom: -1px;
+  border-bottom: 1px solid #fff;
+}
+
+.market-group {
+  margin-bottom: 2rem;
+}
+
+.market-group h2 {
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Qualifiers on the two conditional winner markets --------------------- */
+
+.confidence-tag {
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.confidence-low {
+  background: #f6d5d5;
+  color: #7d2020;
+}
+
+.confidence-medium {
+  background: #e2e8ef;
+  color: #33475e;
+}
+
+/* The conditional-probability caveat. Small, but never hidden: the number
+   beside it is not the same quantity as the full-game win probability. */
+.interpretation {
+  display: block;
+  font-size: 0.75rem;
+  color: #666;
+  font-weight: normal;
+}
+
+/* Player predictions --------------------------------------------------- */
+
+.roster-columns {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.roster-column {
+  flex: 1 1 260px;
+}
+
+.roster-column h3 {
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+
+.roster-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.roster-list li {
+  padding: 0.15rem 0;
+}
+
+.roster-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+/* Always shown when availability is unknown. Deliberately not styled as an
+   error - it is a statement about what is known, not a failure. */
+.availability-note {
+  font-size: 0.75rem;
+  color: #6a5a2a;
+  background: #fdf6e0;
+  border-left: 3px solid #d9c07a;
+  padding: 0.4rem 0.6rem;
+  margin: 0 0 0.6rem;
+}
+
+.player-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.player-section {
+  border: 1px solid #e2e2e2;
+  border-radius: 5px;
+  padding: 0.85rem 1rem;
+}
+
+.player-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-tag {
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: normal;
+  background: #eef2f7;
+  color: #3a5470;
+  text-transform: lowercase;
+}

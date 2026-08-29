@@ -71,3 +71,36 @@ export function createPrediction(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+/**
+ * The six Q1 / first-half markets.
+ *
+ * Same payload as createPrediction, different response: markets carrying
+ * confidence labels and, on the two winner markets, a conditional-
+ * probability caveat. Separate endpoints rather than one, mirroring the
+ * inference service's own split - a combined response would be half nulls
+ * whichever way it was called.
+ */
+export function createQuarterHalfPrediction(payload) {
+  return request('/predictions/quarter-half', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * Both teams' prop boards in one call.
+ *
+ * A POST rather than a GET because it creates prediction rows, like the
+ * other two - it is not a lookup. Fetched lazily by the detail view: this
+ * is twenty players by five stats, meaningfully heavier than the other two
+ * calls combined, and plenty of sessions never open that tab.
+ */
+export function getPlayerPropPredictions(payload) {
+  return request('/predictions/player-props', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}

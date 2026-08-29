@@ -1,16 +1,9 @@
 package com.andreisichet.basketball_predictor.service;
 
 import java.time.Instant;
-import java.time.LocalDate;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestClientResponseException;
-import org.springframework.web.server.ResponseStatusException;
 
 import com.andreisichet.basketball_predictor.dto.GameSummaryDto;
 import com.andreisichet.basketball_predictor.dto.InferenceRequest;
@@ -20,28 +13,31 @@ import com.andreisichet.basketball_predictor.dto.PredictionRequest;
 import com.andreisichet.basketball_predictor.model.Game;
 import com.andreisichet.basketball_predictor.model.Prediction;
 import com.andreisichet.basketball_predictor.model.Team;
-import com.andreisichet.basketball_predictor.repository.GameRepository;
 import com.andreisichet.basketball_predictor.repository.PredictionRepository;
-import com.andreisichet.basketball_predictor.repository.TeamRepository;
 
+/**
+ * The seven full-game models.
+ *
+ * The RestClient, the 4xx/5xx translation and the find-or-create rule used
+ * to live here. They moved to InferenceClient and GameLookup when the
+ * quarter/half and player-prop services arrived and needed identical
+ * behaviour - extracting at two or three call sites rather than waiting for
+ * the copies to drift.
+ */
 @Service
 public class PredictionService {
 
-    private final TeamRepository teamRepository;
-    private final GameRepository gameRepository;
+    private final GameLookup gameLookup;
     private final PredictionRepository predictionRepository;
-    private final RestClient inferenceClient;
+    private final InferenceClient inferenceClient;
 
     public PredictionService(
-            TeamRepository teamRepository,
-            GameRepository gameRepository,
+            GameLookup gameLookup,
             PredictionRepository predictionRepository,
-            RestClient.Builder builder,
-            @Value("${inference.service.url}") String inferenceServiceUrl) {
-        this.teamRepository = teamRepository;
-        this.gameRepository = gameRepository;
+            InferenceClient inferenceClient) {
+        this.gameLookup = gameLookup;
         this.predictionRepository = predictionRepository;
-        this.inferenceClient = builder.baseUrl(inferenceServiceUrl).build();
+        this.inferenceClient = inferenceClient;
     }
 
     /**
@@ -54,12 +50,14 @@ public class PredictionService {
      */
     @Transactional
     public GameSummaryDto predict(PredictionRequest request) {
-        Team homeTeam = requireTeam(request.homeTeamId());
-        Team awayTeam = requireTeam(request.awayTeamId());
+        Team homeTeam = gameLookup.requireTeam(request.homeTeamId());
+        Team awayTeam = gameLookup.requireTeam(request.awayTeamId());
 
-        InferenceResponse inference = callInferenceService(request);
+        InferenceResponse inference = inferenceClient.predict(
+                new InferenceRequest(
+                        request.homeTeamId(), request.awayTeamId(), request.gameDate()));
 
-        Game game = findOrCreateGame(homeTeam, awayTeam, request.gameDate());
+        Game game = gameLookup.findOrCreateGame(homeTeam, awayTeam, request.gameDate());
         Prediction prediction = predictionRepository.save(toPrediction(game, inference));
 
         return new GameSummaryDto(
@@ -69,56 +67,6 @@ public class PredictionService {
                 game.getGameDate(),
                 game.isPlayed(),
                 PredictionDto.from(prediction));
-    }
-
-    private Team requireTeam(Long teamId) {
-        if (teamId == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Team id is required.");
-        }
-        return teamRepository.findById(teamId)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST, "Unknown team id: " + teamId));
-    }
-
-    private Game findOrCreateGame(Team homeTeam, Team awayTeam, LocalDate gameDate) {
-        return gameRepository.findByHomeTeamAndAwayTeamAndGameDate(homeTeam, awayTeam, gameDate)
-                .orElseGet(() -> {
-                    Game game = new Game();
-                    game.setHomeTeam(homeTeam);
-                    game.setAwayTeam(awayTeam);
-                    game.setGameDate(gameDate);
-                    game.setPlayed(false);
-                    return gameRepository.save(game);
-                });
-    }
-
-    /**
-     * Call the Python service, turning its failures into sensible statuses.
-     *
-     * A 4xx from there means bad input (stale data, unknown team, date too
-     * far ahead), so it stays a 4xx here instead of becoming a 500. An
-     * unreachable service is a 503, since the request itself was fine.
-     */
-    private InferenceResponse callInferenceService(PredictionRequest request) {
-        InferenceRequest body = new InferenceRequest(
-                request.homeTeamId(), request.awayTeamId(), request.gameDate());
-
-        try {
-            return inferenceClient.post()
-                    .uri("/predict")
-                    .body(body)
-                    .retrieve()
-                    .body(InferenceResponse.class);
-        } catch (RestClientResponseException error) {
-            HttpStatus status = error.getStatusCode().is4xxClientError()
-                    ? HttpStatus.BAD_REQUEST
-                    : HttpStatus.BAD_GATEWAY;
-            throw new ResponseStatusException(
-                    status, "Inference service rejected the request: " + error.getResponseBodyAsString());
-        } catch (RestClientException error) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE, "Inference service unreachable: " + error.getMessage());
-        }
     }
 
     private Prediction toPrediction(Game game, InferenceResponse inference) {

@@ -1,5 +1,10 @@
 import { useState } from 'react';
-import { createPrediction, getHealth, getSchedule } from './api';
+import {
+  createPrediction,
+  createQuarterHalfPrediction,
+  getHealth,
+  getSchedule,
+} from './api';
 import { latestPredictableDate } from './dates';
 
 const SCHEDULE_DAYS_AHEAD = 14;
@@ -55,13 +60,28 @@ function BrowseView({ games, onGamesLoaded, onSelect }) {
     setPendingKey(fixtureKey(game));
     setPredictError(null);
 
+    const payload = {
+      homeTeamId: game.homeTeamId,
+      awayTeamId: game.awayTeamId,
+      gameDate: game.gameDate,
+    };
+
     try {
-      const result = await createPrediction({
-        homeTeamId: game.homeTeamId,
-        awayTeamId: game.awayTeamId,
-        gameDate: game.gameDate,
-      });
-      onSelect(result);
+      // Both together, not staggered. They are the two halves of the
+      // default tab, they are both small, and the backend resolves them to
+      // the same Game row - so a sequential pair would only mean the
+      // detail view painting with half its content missing. Player props
+      // are deliberately NOT here; they are heavier and are fetched only
+      // if that tab is opened.
+      const [gameResult, quarterHalfResult] = await Promise.all([
+        createPrediction(payload),
+        createQuarterHalfPrediction(payload),
+      ]);
+
+      // The request travels with the result so the detail view can fetch
+      // player props later without reconstructing team ids from
+      // abbreviations.
+      onSelect({ game: gameResult, quarterHalf: quarterHalfResult, request: payload });
     } catch (failure) {
       // The disabled state should make this unreachable. If it is ever
       // reached anyway, the backend's real reason is what shows.

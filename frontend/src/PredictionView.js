@@ -1,11 +1,67 @@
+import { useState } from 'react';
+import GamePredictionsTab from './GamePredictionsTab';
+import PlayerPredictionsTab from './PlayerPredictionsTab';
+import { getPlayerPropPredictions } from './api';
+
 /**
- * Detail view: every model's output for one matchup.
+ * Detail view for one matchup, split into two dashboards.
  *
- * Takes the GameSummaryDto the POST already returned rather than fetching
- * anything - the prediction was made to get here.
+ * BACK IS NOT A TAB, and is kept visually and structurally apart from the
+ * two. Leaving the detail view and switching which markets you are looking
+ * at are different kinds of navigation, and putting them in one row would
+ * invite the first to be clicked by accident.
+ *
+ * TWO FETCH STRATEGIES, on purpose:
+ *
+ *   Full-game and quarter/half arrive together, already fetched by
+ *   BrowseView before this component mounts. Both are small, both are on
+ *   the default tab, and the backend guarantees they share one Game row -
+ *   so staggering them would buy nothing and show a loading gap on the
+ *   view's first paint.
+ *
+ *   Player props are fetched on the FIRST click of their tab and then
+ *   cached here. Twenty players by five stats is heavier than the other two
+ *   calls combined, and a session may never open that tab at all. Paying
+ *   for it up front would slow down every visit to serve some of them.
+ *
+ * Both panels stay MOUNTED once rendered, hidden rather than unmounted, so
+ * switching tabs loses neither the roster fetch nor which players are
+ * currently expanded.
  */
 function PredictionView({ result, onBack }) {
-  const prediction = result.latestPrediction;
+  const [activeTab, setActiveTab] = useState('game');
+  const [playerProps, setPlayerProps] = useState(null);
+  const [loadingPlayers, setLoadingPlayers] = useState(false);
+  const [playerError, setPlayerError] = useState(null);
+
+  const game = result.game;
+  const quarterHalf = result.quarterHalf?.prediction ?? null;
+
+  async function showPlayerTab() {
+    setActiveTab('player');
+
+    // Already fetched, or already in flight: the cache is the whole reason
+    // a second click costs nothing.
+    if (playerProps || loadingPlayers) {
+      return;
+    }
+
+    setLoadingPlayers(true);
+    setPlayerError(null);
+
+    try {
+      const board = await getPlayerPropPredictions({
+        homeTeamId: result.request.homeTeamId,
+        awayTeamId: result.request.awayTeamId,
+        gameDate: result.request.gameDate,
+      });
+      setPlayerProps(board);
+    } catch (failure) {
+      setPlayerError(failure.message);
+    } finally {
+      setLoadingPlayers(false);
+    }
+  }
 
   return (
     <div>
@@ -15,57 +71,65 @@ function PredictionView({ result, onBack }) {
 
       <header className="intro">
         <h1>
-          {result.awayTeamAbbreviation} @ {result.homeTeamAbbreviation}
+          {game.awayTeamAbbreviation} @ {game.homeTeamAbbreviation}
         </h1>
-        <p className="game-date">{result.gameDate}</p>
+        <p className="game-date">{game.gameDate}</p>
       </header>
 
-      {prediction ? (
-        <>
-          {prediction.stale && (
-            <p className="freshness">
-              <span className="stale-badge">STALE</span>
-              Computed from data as of {prediction.dataAsOf}
-            </p>
-          )}
+      <div className="dashboard-tabs" role="tablist" aria-label="Prediction dashboards">
+        <button
+          role="tab"
+          id="tab-game"
+          aria-selected={activeTab === 'game'}
+          aria-controls="panel-game"
+          className={activeTab === 'game' ? 'tab active' : 'tab'}
+          onClick={() => setActiveTab('game')}
+        >
+          Game Predictions
+        </button>
+        <button
+          role="tab"
+          id="tab-player"
+          aria-selected={activeTab === 'player'}
+          aria-controls="panel-player"
+          className={activeTab === 'player' ? 'tab active' : 'tab'}
+          onClick={showPlayerTab}
+        >
+          Player Predictions
+        </button>
+      </div>
 
-          <dl className="prediction-grid">
-            <Metric
-              label="Home win probability"
-              value={`${(prediction.homeWinProbability * 100).toFixed(1)}%`}
-            />
-            <Metric label="Home margin" value={prediction.homeMargin.toFixed(1)} />
-            <Metric label="Total points" value={prediction.totalPoints.toFixed(1)} />
-            <Metric
-              label="Rebound margin"
-              value={prediction.reboundMargin.toFixed(1)}
-            />
-            <Metric
-              label="Total rebounds"
-              value={prediction.totalRebounds.toFixed(1)}
-            />
-            <Metric
-              label="Assist margin"
-              value={prediction.assistMargin.toFixed(1)}
-            />
-            <Metric
-              label="Total assists"
-              value={prediction.totalAssists.toFixed(1)}
-            />
-          </dl>
-        </>
-      ) : (
-        <p className="status">No prediction yet</p>
-      )}
-    </div>
-  );
-}
+      <div
+        role="tabpanel"
+        id="panel-game"
+        aria-labelledby="tab-game"
+        hidden={activeTab !== 'game'}
+      >
+        <GamePredictionsTab
+          prediction={game.latestPrediction}
+          quarterHalf={quarterHalf}
+        />
+      </div>
 
-function Metric({ label, value }) {
-  return (
-    <div className="metric-row">
-      <dt>{label}</dt>
-      <dd>{value}</dd>
+      <div
+        role="tabpanel"
+        id="panel-player"
+        aria-labelledby="tab-player"
+        hidden={activeTab !== 'player'}
+      >
+        {loadingPlayers && <p className="status">Loading player predictions…</p>}
+        {playerError && (
+          <p className="status error">
+            Could not load player predictions: {playerError}
+          </p>
+        )}
+        {playerProps && (
+          <PlayerPredictionsTab
+            homeTeam={playerProps.homeTeam}
+            awayTeam={playerProps.awayTeam}
+          />
+        )}
+      </div>
     </div>
   );
 }
