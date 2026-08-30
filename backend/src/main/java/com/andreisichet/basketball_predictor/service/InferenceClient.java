@@ -1,6 +1,9 @@
 package com.andreisichet.basketball_predictor.service;
 
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -12,6 +15,7 @@ import com.andreisichet.basketball_predictor.dto.InferencePlayerPropsResponse;
 import com.andreisichet.basketball_predictor.dto.InferenceQuarterHalfResponse;
 import com.andreisichet.basketball_predictor.dto.InferenceRequest;
 import com.andreisichet.basketball_predictor.dto.InferenceResponse;
+import com.andreisichet.basketball_predictor.dto.InferenceScheduledGame;
 
 /**
  * The one place that talks to the Python inference service.
@@ -43,6 +47,10 @@ import com.andreisichet.basketball_predictor.dto.InferenceResponse;
 @Component
 public class InferenceClient {
 
+    private static final ParameterizedTypeReference<List<InferenceScheduledGame>> SCHEDULE_TYPE =
+            new ParameterizedTypeReference<>() {
+            };
+
     private final RestClient client;
 
     public InferenceClient(
@@ -64,6 +72,40 @@ public class InferenceClient {
     /** Both teams' prop boards in one call. */
     public InferencePlayerPropsResponse predictPlayerProps(InferenceRequest body) {
         return call("/predict/player-props", body, InferencePlayerPropsResponse.class);
+    }
+
+    /**
+     * Upcoming regular-season fixtures, straight from nba_api.
+     *
+     * The fourth method here, and the last inference-service call that was
+     * not going through this client - it predates the extraction and kept
+     * its own RestClient in ScheduleService. Consolidated now so every call
+     * to the Python service shares one client and one status mapping.
+     *
+     * A 5xx from there usually means the NBA API failed rather than this
+     * service, which is why it maps to 502 like the others: reachable, but
+     * broken on its own.
+     */
+    public List<InferenceScheduledGame> fetchSchedule(int daysAhead) {
+        try {
+            List<InferenceScheduledGame> fixtures = client.get()
+                    .uri(builder -> builder.path("/schedule")
+                            .queryParam("days_ahead", daysAhead)
+                            .build())
+                    .retrieve()
+                    .body(SCHEDULE_TYPE);
+            return fixtures == null ? List.of() : fixtures;
+        } catch (RestClientResponseException error) {
+            HttpStatus status = error.getStatusCode().is4xxClientError()
+                    ? HttpStatus.BAD_REQUEST
+                    : HttpStatus.BAD_GATEWAY;
+            throw new ResponseStatusException(
+                    status, "Schedule lookup failed: " + error.getResponseBodyAsString());
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "Inference service unreachable: " + error.getMessage());
+        }
     }
 
     private <T> T call(String path, InferenceRequest body, Class<T> responseType) {
