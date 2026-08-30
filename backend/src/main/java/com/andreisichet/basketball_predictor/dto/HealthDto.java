@@ -1,6 +1,7 @@
 package com.andreisichet.basketball_predictor.dto;
 
 import java.time.LocalDate;
+import java.util.Map;
 
 /**
  * Dataset freshness as sent to clients.
@@ -11,10 +12,17 @@ import java.time.LocalDate;
  *
  * dataAsOf is what lets the client mark fixtures it cannot get a
  * prediction for, rather than letting someone click into a certain 400.
+ *
+ * modelsLoaded is PASSED THROUGH rather than dropped, even though the
+ * frontend reads only dataAsOf and stale. This is a health endpoint, and
+ * the per-family breakdown is exactly the diagnostic the inference service
+ * broke it out to provide - discarding it here would mean the one place an
+ * operator looks cannot say which model family failed to load. A client
+ * that does not want it simply ignores it.
  */
 public record HealthDto(
         String status,
-        int modelsLoaded,
+        Map<String, Integer> modelsLoaded,
         LocalDate dataAsOf,
         int daysBehind,
         boolean stale) {

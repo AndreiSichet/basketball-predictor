@@ -12,7 +12,10 @@ jest.mock('./api');
 
 const HEALTH = {
   status: 'ok',
-  modelsLoaded: 7,
+  // Per-family, matching what the service actually returns. Kept accurate
+  // even though no component reads it: a fixture that lies about the API
+  // is how a test suite stays green through a real breakage.
+  modelsLoaded: { team: 7, quarter_half: 6, player_props: 10 },
   dataAsOf: '2026-04-12',
   daysBehind: 131,
   stale: true,
