@@ -1,19 +1,62 @@
-fastapi
-uvicorn
-xgboost
-# Required by xgboost's sklearn API, not used directly. app.py loads models
-# as XGBClassifier/XGBRegressor rather than raw Booster, and XGBModel.__init__
-# raises "sklearn needs to be installed" without it. Easy to miss locally,
-# where the shared dev venv already has it for ml-training.
+# EVERY DIRECT DEPENDENCY IS PINNED, and the reason is reproducibility of
+# NUMBERS, not just of a working build.
 #
-# PINNED, and the pin is load-bearing rather than tidiness. The six
-# quarter/half models in ml-training/models_quarter_half/ are .joblib
-# pickles of sklearn Pipeline objects, so they are coupled to the version
-# that wrote them in a way XGBoost's .json format is not - a mismatched
-# sklearn can refuse to unpickle them, or warn and load something subtly
-# different. 1.9.0 is what produced those artifacts. Re-run
-# finalize_quarter_half_models.py if this is ever bumped.
+# This file used to name packages without versions. That meant any rebuild
+# resolved whatever was newest that day, and the failure mode of a numeric
+# library changing underneath a trained model is not a crash - it is
+# different predictions, returned with total confidence and no error
+# anywhere. A pinned file is the only thing that makes an image rebuilt in
+# six months the same image.
+#
+# THE DRIFT ALREADY HAPPENED, which is what forced this. The versions below
+# were read from `pip freeze` inside the RUNNING container, not from the
+# host dev venv, and the two had silently diverged:
+#
+#                host venv        container
+#   pandas       2.3.3            3.0.5      <- a major version apart
+#   numpy        2.5.1            2.5.2
+#   xgboost      3.4.0            3.4.1
+#   uvicorn      0.52.1           0.52.4
+#
+# Before pinning, both were asked for the same prediction (ATL vs BOS,
+# 2026-04-13) and returned 0.42541608214378357 - bit for bit identical
+# across the pandas 2/3 boundary. So these pins lock in a state that was
+# measured, not assumed. Had they disagreed, the right pin would have been
+# the host's versions, since that is what every recorded result in this
+# project was verified against.
+#
+# WHAT THIS DOES NOT DO: transitive dependencies (pydantic, starlette,
+# scipy, joblib and the rest) are still resolved freshly on each build.
+# Pinning the whole closure would make this a lockfile, which is a bigger
+# piece of machinery than this project uses anywhere else. The numeric
+# libraries - the ones whose drift is silent - are all direct and all
+# pinned here.
+#
+# The same unpinned risk applies to ml-training/requirements.txt and
+# data-pipeline/requirements.txt, at training time rather than serving
+# time. Not urgent while nothing is rebuilding those environments.
+
+fastapi==0.141.1
+uvicorn==0.52.4
+
+# nba_api backs GET /schedule. Not on the prediction path, but a breaking
+# change here takes the browse view down.
+nba_api==1.11.4
+
+# THE THREE WITH THE SILENT FAILURE MODE. A change in any of these can
+# alter a prediction without raising anything.
+pandas==3.0.5
+numpy==2.5.2
+xgboost==3.4.1
+
+# Required by xgboost's sklearn API, not used directly. app.py loads models
+# as XGBClassifier/XGBRegressor rather than raw Booster, and XGBModel
+# .__init__ raises "sklearn needs to be installed" without it. Easy to miss
+# locally, where the shared dev venv already has it for ml-training.
+#
+# This one was pinned first and separately: the six quarter/half models and
+# the five player-prop linear models are .joblib pickles of sklearn
+# Pipeline objects, coupled to the version that wrote them in a way
+# XGBoost's .json format is not. Re-run finalize_quarter_half_models.py and
+# finalize_player_models.py if this is ever bumped.
 scikit-learn==1.9.0
-pandas
-numpy
-nba_api

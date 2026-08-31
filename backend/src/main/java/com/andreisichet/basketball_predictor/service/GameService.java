@@ -1,5 +1,6 @@
 package com.andreisichet.basketball_predictor.service;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -29,6 +30,11 @@ public class GameService {
     /**
      * Upcoming games, soonest first, each with its newest prediction.
      *
+     * "Upcoming" means today or later, not merely "not marked played".
+     * Nothing sets played = true yet, so without the date bound every
+     * cached fixture would age into the past and stay in this list
+     * permanently. See the repository method for the full reasoning.
+     *
      * TWO QUERIES, REGARDLESS OF HOW MANY GAMES. This used to run one
      * lookup per game inside the mapping loop - fine when the table held a
      * handful of rows someone had actually predicted, and a measured 486
@@ -43,7 +49,9 @@ public class GameService {
      */
     @Transactional(readOnly = true)
     public List<GameSummaryDto> getUpcomingGames() {
-        List<Game> games = gameRepository.findByPlayedFalseOrderByGameDateAsc();
+        List<Game> games = gameRepository
+                .findByPlayedFalseAndGameDateGreaterThanEqualOrderByGameDateAsc(
+                        LocalDate.now());
 
         if (games.isEmpty()) {
             return List.of();
