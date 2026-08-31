@@ -11,6 +11,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.andreisichet.basketball_predictor.dto.InferenceHealth;
 import com.andreisichet.basketball_predictor.dto.InferencePlayerPropsResponse;
 import com.andreisichet.basketball_predictor.dto.InferenceQuarterHalfResponse;
 import com.andreisichet.basketball_predictor.dto.InferenceRequest;
@@ -20,16 +21,16 @@ import com.andreisichet.basketball_predictor.dto.InferenceScheduledGame;
 /**
  * The one place that talks to the Python inference service.
  *
- * Extracted when the second and third callers arrived, not after. Until now
- * PredictionService owned both the RestClient and the rule for turning the
- * Python service's failures into Java statuses; copying that rule into two
- * more services is how one endpoint quietly starts translating a 400 into a
- * 500 while the others do not.
+ * That sentence is now literally true, and it was not until this class
+ * absorbed getHealth(). It arrived with three of the five calls, took
+ * fetchSchedule when the schedule caching landed, and left /health behind
+ * in ScheduleService with a second RestClient - so the class documented
+ * itself as the single point of contact while a second one quietly existed
+ * beside it. A comment that overstates is worse than no comment, because
+ * the next person trusts it instead of checking.
  *
- * It also collapses three RestClient instances into one. Each service used
- * to build its own from the injected builder against the same base URL,
- * which was noted as acceptable at two and would have been careless at
- * three.
+ * There is now exactly ONE RestClient instance in the backend, built once
+ * against the configured base URL and shared by all five calls.
  *
  * THE STATUS MAPPING IS THE POINT, and it is deliberately not symmetric:
  *
@@ -61,30 +62,26 @@ public class InferenceClient {
 
     /** The seven full-game models. */
     public InferenceResponse predict(InferenceRequest body) {
-        return call("/predict", body, InferenceResponse.class);
+        return post("/predict", body, InferenceResponse.class);
     }
 
     /** The six Q1 / first-half models. */
     public InferenceQuarterHalfResponse predictQuarterHalf(InferenceRequest body) {
-        return call("/predict/quarter-half", body, InferenceQuarterHalfResponse.class);
+        return post("/predict/quarter-half", body, InferenceQuarterHalfResponse.class);
     }
 
     /** Both teams' prop boards in one call. */
     public InferencePlayerPropsResponse predictPlayerProps(InferenceRequest body) {
-        return call("/predict/player-props", body, InferencePlayerPropsResponse.class);
+        return post("/predict/player-props", body, InferencePlayerPropsResponse.class);
     }
 
     /**
      * Upcoming regular-season fixtures, straight from nba_api.
      *
-     * The fourth method here, and the last inference-service call that was
-     * not going through this client - it predates the extraction and kept
-     * its own RestClient in ScheduleService. Consolidated now so every call
-     * to the Python service shares one client and one status mapping.
-     *
-     * A 5xx from there usually means the NBA API failed rather than this
-     * service, which is why it maps to 502 like the others: reachable, but
-     * broken on its own.
+     * Read on a timer by ScheduleSyncService, not per request. A 5xx here
+     * usually means the NBA API failed rather than the inference service,
+     * which is why it maps to 502 like the others: reachable, but broken on
+     * its own.
      */
     public List<InferenceScheduledGame> fetchSchedule(int daysAhead) {
         try {
@@ -96,19 +93,42 @@ public class InferenceClient {
                     .body(SCHEDULE_TYPE);
             return fixtures == null ? List.of() : fixtures;
         } catch (RestClientResponseException error) {
-            HttpStatus status = error.getStatusCode().is4xxClientError()
-                    ? HttpStatus.BAD_REQUEST
-                    : HttpStatus.BAD_GATEWAY;
-            throw new ResponseStatusException(
-                    status, "Schedule lookup failed: " + error.getResponseBodyAsString());
+            throw rejected("Schedule lookup failed", error);
         } catch (RestClientException error) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "Inference service unreachable: " + error.getMessage());
+            throw unreachable(error);
         }
     }
 
-    private <T> T call(String path, InferenceRequest body, Class<T> responseType) {
+    /**
+     * How fresh the underlying pipeline data is.
+     *
+     * Called live on every browse request and never cached: data_as_of
+     * tracks the pipeline's own data, so a cached copy would have the
+     * client deciding which fixtures are predictable from an out-of-date
+     * cutoff - wrong at exactly the moment it matters most, the first
+     * request after a pipeline rerun.
+     *
+     * NOTE, because this is a real behaviour change: while this lived in
+     * ScheduleService it caught RestClientException only, so a 500 from the
+     * inference service surfaced as 503 "unreachable". It now follows the
+     * same mapping as every other call, and a 5xx becomes 502. That is the
+     * more accurate answer - reachable but broken is not the same as
+     * absent - and it makes all five calls behave identically.
+     */
+    public InferenceHealth getHealth() {
+        try {
+            return client.get()
+                    .uri("/health")
+                    .retrieve()
+                    .body(InferenceHealth.class);
+        } catch (RestClientResponseException error) {
+            throw rejected("Health check failed", error);
+        } catch (RestClientException error) {
+            throw unreachable(error);
+        }
+    }
+
+    private <T> T post(String path, InferenceRequest body, Class<T> responseType) {
         try {
             return client.post()
                     .uri(path)
@@ -116,16 +136,31 @@ public class InferenceClient {
                     .retrieve()
                     .body(responseType);
         } catch (RestClientResponseException error) {
-            HttpStatus status = error.getStatusCode().is4xxClientError()
-                    ? HttpStatus.BAD_REQUEST
-                    : HttpStatus.BAD_GATEWAY;
-            throw new ResponseStatusException(
-                    status,
-                    "Inference service rejected the request: " + error.getResponseBodyAsString());
+            throw rejected("Inference service rejected the request", error);
         } catch (RestClientException error) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "Inference service unreachable: " + error.getMessage());
+            throw unreachable(error);
         }
+    }
+
+    /**
+     * The service answered, but with a failure. 4xx stays 4xx so a caller
+     * error is not reported as ours; anything else is 502.
+     *
+     * Extracted at the point there would otherwise have been three
+     * identical copies - the same reason this class exists at all.
+     */
+    private ResponseStatusException rejected(String context, RestClientResponseException error) {
+        HttpStatus status = error.getStatusCode().is4xxClientError()
+                ? HttpStatus.BAD_REQUEST
+                : HttpStatus.BAD_GATEWAY;
+        return new ResponseStatusException(
+                status, context + ": " + error.getResponseBodyAsString());
+    }
+
+    /** Nothing answered at all. The request was fine; the dependency is not. */
+    private ResponseStatusException unreachable(RestClientException error) {
+        return new ResponseStatusException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "Inference service unreachable: " + error.getMessage());
     }
 }

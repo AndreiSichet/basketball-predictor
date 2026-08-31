@@ -1,9 +1,47 @@
-pandas
-numpy
-requests
-beautifulsoup4
-scikit-learn
-nba_api
+# PINNED for the same reason the other two requirements files are: a
+# numeric library changing under this code does not raise, it produces
+# different CSVs - and every downstream number, model and prediction is
+# computed from those.
+#
+# These versions are what the shared root .venv actually has, and therefore
+# what the recorded pipeline results were produced on: 26,398 team-game
+# rows, 13,199 games in model_dataset.csv, 280,943 player-game rows, the
+# 12,486/710 regulation-overtime split, and the validators that pass on all
+# of it.
+#
+# SAME DELIBERATE SPLIT WITH inference-service as ml-training carries. That
+# file pins pandas==3.0.5; this one pins 2.3.3. The full reasoning is in
+# ml-training/requirements.txt - short version: the container drifted to
+# pandas 3, host and container were measured as bit-identical over 113
+# predictions, and forcing them together would either invalidate every
+# recorded pipeline number or downgrade a working container. Recorded, not
+# reconciled. Revisit at the October rerun.
+#
+# ONE PANDAS BEHAVIOUR THIS PIPELINE ACTIVELY DEPENDS ON KNOWING: .assign()
+# of a Series onto a zero-row frame reindexes the frame back up to the
+# Series' index in pandas 2.3.3. The inference service works around it by
+# deriving columns before filtering rather than after. That workaround is
+# safe under either major version, but it is the kind of thing that makes
+# an unpinned pandas genuinely dangerous here.
+#
+# Transitive dependencies are resolved freshly, matching the other two
+# files. Note nbainjuries pulls tabula-py, which pulls jpype1 and shells
+# out to a Java runtime - a break in that chain is loud (an import or a
+# parse error), not silent, which is why they are left to resolve.
+
+pandas==2.3.3
+numpy==2.5.1
+scikit-learn==1.9.0
+
+requests==2.34.2
+beautifulsoup4==4.15.0
+
+# The whole ingestion side. A breaking change here stops a pull outright
+# rather than corrupting one - which has already happened twice, when
+# BoxScoreTraditionalV2 and then BoxScoreSummaryV2 were deprecated
+# mid-project.
+nba_api==1.11.4
+
 # Fetches and parses the NBA's official injury report PDFs, for live
 # availability at serving time. Not hand-rolled because those PDFs separate
 # columns by position rather than by any character, and wrapped "Reason"
@@ -12,5 +50,6 @@ nba_api
 #
 # Pulls tabula-py, which shells out to a Java runtime. Already satisfied on
 # this machine by the JDK installed for the Spring Boot backend (see §4), so
-# no extra setup - but it is a real dependency on a fresh environment.
-nbainjuries
+# no extra setup - but it is a real dependency on a fresh environment, and
+# the reason the inference container cannot run this code today.
+nbainjuries==1.1.1

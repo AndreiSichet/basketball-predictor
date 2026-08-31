@@ -552,9 +552,12 @@ service/  - THE DECISION-MAKING
 -------------------------------------------------------------------------------
   InferenceClient.java         NEW, AND THE MOST IMPORTANT ADDITION.
                                The single place that talks to the Python
-                               service. Four methods, one per Python
-                               endpoint, each doing the network call and
-                               the same translation of failures:
+                               service - genuinely single since getHealth()
+                               moved here; for a while it said that while a
+                               second client sat in ScheduleService. FIVE
+                               methods, one per Python endpoint, each doing
+                               the network call and the same translation of
+                               failures:
                                  Python said 400 -> we say 400
                                  Python said 500 -> we say 502
                                  Python unreachable -> we say 503
@@ -578,7 +581,8 @@ service/  - THE DECISION-MAKING
                                prediction. Rewritten this version to use
                                two queries instead of one-per-game.
   ScheduleService.java         Serves the cached fixture list and the live
-                               freshness check. Rewritten this version.
+                               freshness check. Rewritten this version, and
+                               no longer holds a network client of its own.
   ScheduleSyncService.java     NEW. Fetches the fixture list and caches it.
 
 -------------------------------------------------------------------------------

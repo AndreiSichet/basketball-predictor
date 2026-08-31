@@ -1,5 +1,46 @@
-scikit-learn
-pandas
-numpy
-xgboost
-mlflow
+# PINNED for the same reason inference-service/requirements.txt is: the
+# failure mode of a numeric library changing under this code is not a crash,
+# it is different models, trained silently and indistinguishable from the
+# ones on record.
+#
+# These versions are what the shared root .venv actually has, and therefore
+# what every measured result in CLAUDE.md was produced on - the moneyline
+# 0.6777 / 0.6016, the six regression MAEs, the 38-feature tree counts, the
+# quarter/half and player-prop tables. A retrain on different resolved
+# versions would produce numbers nobody could reconcile with any of that.
+#
+# NOTE THE DELIBERATE SPLIT WITH inference-service. That file pins
+# pandas==3.0.5 / numpy==2.5.2 / xgboost==3.4.1; this one pins pandas 2.3.3
+# / numpy 2.5.1 / xgboost 3.4.0. They are NOT the same, and the difference
+# is recorded rather than reconciled:
+#
+#   - The container drifted to pandas 3 at some point and has been serving
+#     from it. Host and container were asked for the same prediction and
+#     returned bit-identical values across the 2/3 boundary, over 113
+#     numbers - so the split is measured as harmless for the served path,
+#     not assumed to be.
+#   - Forcing them together would mean either upgrading this environment,
+#     which invalidates every recorded training number until re-verified, or
+#     downgrading a container that demonstrably works. Neither is worth
+#     doing to make two files look alike.
+#
+# Revisit at the October pipeline rerun: that is a retrain anyway, so it is
+# the natural moment to move this environment forward and re-record the
+# numbers under whatever it lands on.
+#
+# Transitive dependencies (scipy, joblib, and mlflow's large tree) are
+# resolved freshly, matching the direct-only discipline used in
+# inference-service. Every library whose drift would be silent is direct.
+
+scikit-learn==1.9.0
+
+# The three with the silent failure mode.
+pandas==2.3.3
+numpy==2.5.1
+xgboost==3.4.0
+
+# Pinned because MLflow 3.x rejected the plain-directory tracking backend
+# that 2.x accepted, which is why setup_mlflow() uses SQLite. A major
+# version move here breaks tracking rather than corrupting numbers, but it
+# breaks it for every training script at once.
+mlflow==3.15.1

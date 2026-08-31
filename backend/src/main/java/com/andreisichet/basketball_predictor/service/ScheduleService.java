@@ -6,15 +6,10 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.server.ResponseStatusException;
 
 import com.andreisichet.basketball_predictor.dto.HealthDto;
-import com.andreisichet.basketball_predictor.dto.InferenceHealth;
 import com.andreisichet.basketball_predictor.dto.ScheduledGameDto;
 import com.andreisichet.basketball_predictor.model.Game;
 import com.andreisichet.basketball_predictor.model.Team;
@@ -24,8 +19,8 @@ import com.andreisichet.basketball_predictor.repository.TeamRepository;
 /**
  * Serves upcoming fixtures and dataset freshness.
  *
- * TWO SOURCES NOW, DELIBERATELY DIFFERENT, and that split is the point of
- * this class:
+ * TWO SOURCES, DELIBERATELY DIFFERENT, and that split is the point of this
+ * class:
  *
  *   Fixtures come from the DATABASE, cached by ScheduleSyncService every
  *   six hours. They describe a season calendar, which changes about as
@@ -36,27 +31,27 @@ import com.andreisichet.basketball_predictor.repository.TeamRepository;
  *   must keep doing so. data_as_of tracks the pipeline's data, so caching
  *   it alongside the fixtures would mean the client computing which games
  *   are predictable from a stale cutoff - and it would go wrong at exactly
- *   the moment it matters most, the first request after a pipeline rerun.
+ *   the moment it matters, the first request after a pipeline rerun.
  *
- * The external contract is unchanged: same route, same query parameter,
- * same response shape. Only where the fixtures come from moved.
+ * This class no longer holds a RestClient of its own. It asks
+ * InferenceClient, like every other caller, which is what makes that
+ * class's "one place that talks to the Python service" claim true rather
+ * than aspirational.
  */
 @Service
 public class ScheduleService {
 
     private final GameRepository gameRepository;
     private final TeamRepository teamRepository;
-    private final RestClient inferenceClient;
+    private final InferenceClient inferenceClient;
 
     public ScheduleService(
             GameRepository gameRepository,
             TeamRepository teamRepository,
-            RestClient.Builder builder,
-            @org.springframework.beans.factory.annotation.Value("${inference.service.url}")
-            String inferenceServiceUrl) {
+            InferenceClient inferenceClient) {
         this.gameRepository = gameRepository;
         this.teamRepository = teamRepository;
-        this.inferenceClient = builder.baseUrl(inferenceServiceUrl).build();
+        this.inferenceClient = inferenceClient;
     }
 
     /**
@@ -68,13 +63,23 @@ public class ScheduleService {
      *
      * Transactional because Game's team relations are LAZY and open-in-view
      * is off. All 30 teams are still loaded once and joined from a map
-     * rather than resolved per fixture, which is what keeps this one query
-     * for the games and one for the teams regardless of how many fixtures
-     * come back.
+     * rather than resolved per fixture, which keeps this one query for the
+     * games and one for the teams regardless of how many come back.
      *
      * NOTE: this can only return what the sync job has cached. A window
      * wider than schedule.sync.days-ahead returns fewer fixtures than the
      * old live call would have.
+     *
+     * THERE IS NO LONGER A SKIP PATH HERE. This method used to drop any
+     * fixture whose team ids were not both in the Team table - a real
+     * concern when fixtures arrived straight off the NBA API, where
+     * undetermined playoff slots carry a placeholder team id of 0. It
+     * cannot happen now: a fixture only reaches this method by first
+     * becoming a Game row, and game.home_team_id / away_team_id are
+     * foreign keys onto team.id, so the database itself refuses a row this
+     * method could not resolve. The skip still exists where it is still
+     * possible - in ScheduleSyncService, before a row is created - and it
+     * is counted in that job's log line rather than being silent.
      */
     @Transactional(readOnly = true)
     public List<ScheduledGameDto> getSchedule(int daysAhead) {
@@ -92,39 +97,17 @@ public class ScheduleService {
 
         return games.stream()
                 .map(game -> toDto(game, teamsById))
-                .filter(dto -> dto != null)
                 .toList();
     }
 
-    /**
-     * Live on every call, never cached. See the class comment.
-     */
+    /** Live on every call, never cached. See the class comment. */
     public HealthDto getHealth() {
-        try {
-            InferenceHealth health = inferenceClient.get()
-                    .uri("/health")
-                    .retrieve()
-                    .body(InferenceHealth.class);
-            return HealthDto.from(health);
-        } catch (RestClientException error) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "Inference service unreachable: " + error.getMessage());
-        }
+        return HealthDto.from(inferenceClient.getHealth());
     }
 
-    /**
-     * A fixture whose team ids are not both in the table is skipped rather
-     * than failing the whole request: an expansion team or a re-seeded
-     * table should cost one row, not the entire browse view.
-     */
     private ScheduledGameDto toDto(Game game, Map<Long, Team> teamsById) {
         Team home = teamsById.get(game.getHomeTeam().getId());
         Team away = teamsById.get(game.getAwayTeam().getId());
-
-        if (home == null || away == null) {
-            return null;
-        }
 
         return new ScheduledGameDto(
                 home.getId(),
