@@ -1,0 +1,228 @@
+name: Continuous retraining
+
+# Retrains the seven team-level models when enough new games have arrived,
+# and opens a pull request only if the promotion gate passes. It never
+# deploys anything by itself - merging is a human decision.
+#
+# RUNS ON A SELF-HOSTED RUNNER, and that is not a preference. A
+# GitHub-hosted runner starts from an empty disk, and
+# build_player_rolling_minutes.py reads all 13,199 files in
+# data/raw/player_boxscores/ - which are gitignored. A hosted run would
+# therefore re-fetch every one of them at the pipeline's 1 request/second
+# ceiling: roughly 3.7 hours against a 6-hour job cap, every single week,
+# and 13,199 calls at the NBA each time. The whole skip-and-resume design
+# of the ingestion scripts assumes a disk that persists. Only a self-hosted
+# runner gives it one.
+#
+# It also sidesteps two other problems rather than mitigating them: no LFS
+# pull at all (the repo's one 76.8 MB object is already checked out), and
+# the calls originate from the same connection that has already made tens
+# of thousands of successful nba_api requests.
+
+on:
+  schedule:
+    # 06:00 UTC Monday. Weekly is the cadence; the script itself decides
+    # whether there is actually enough new data to be worth retraining, so
+    # most firings during the season - and all of them during the offseason
+    # - will exit in seconds having done nothing.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Retraining competes for the machine's CPU and disk. Two of these running
+# at once would fight over the same data directory as well.
+concurrency:
+  group: continuous-retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: self-hosted
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out, WITHOUT wiping the local data corpus
+        uses: actions/checkout@v4
+        with:
+          # clean: false IS LOad-BEARING. actions/checkout defaults to
+          # clean: true, which runs `git clean -ffdx` - and the -x removes
+          # IGNORED files. data/raw/player_boxscores/ is gitignored, so the
+          # default would delete all 13,199 files at the start of every run
+          # and reintroduce the exact cold-cache problem self-hosting exists
+          # to avoid. Silently, and only visible as a job that suddenly
+          # takes hours.
+          clean: false
+          # No lfs: true. The runner's working copy already has the object,
+          # and pulling it again would spend LFS bandwidth this setup was
+          # partly chosen to stop spending.
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install the pinned pipeline and training dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r data-pipeline/requirements.txt
+          pip install -r ml-training/requirements.txt
+
+      - name: Confirm the data corpus survived checkout
+        shell: bash
+        run: |
+          # If this reports a small number, clean: false is not working and
+          # the next step is about to spend hours re-fetching. Better to say
+          # so here than to discover it from a job duration.
+          count=$(ls data-pipeline/data/raw/player_boxscores/*.csv 2>/dev/null | wc -l)
+          echo "player box scores on disk: $count"
+          if [ "$count" -lt 1000 ]; then
+            echo "::warning::Only $count box-score files present. Ingestion will \
+          re-fetch the rest, which takes hours. Check that the runner's work \
+          directory persists and that checkout is not cleaning ignored files."
+          fi
+
+      - name: Retrain and run the promotion gate
+        id: retrain
+        shell: bash
+        # The script exits 1 when the gate refuses. That is a correct,
+        # expected outcome - not a broken job - so the step must not fail
+        # the run on it. The outcomes are told apart below.
+        continue-on-error: true
+        run: |
+          # Clear any candidates left by a previous run, so "did this run
+          # produce models" is answerable by looking at the directory.
+          rm -rf ml-training/models_candidate
+
+          set -o pipefail
+          python ml-training/continuous_retrain.py --min-new-games 100 \
+            2>&1 | tee retrain-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Work out which of the three outcomes happened
+        id: outcome
+        shell: bash
+        run: |
+          code="${{ steps.retrain.outputs.exit_code }}"
+          models=$(ls ml-training/models_candidate/*.json 2>/dev/null \
+                   | grep -v trained_through | wc -l)
+
+          # Three outcomes, deliberately distinguished rather than collapsed:
+          #   gate_failed  - it ran correctly and correctly declined
+          #   promoted     - candidates passed and are worth reviewing
+          #   nothing      - not enough new data; the common case
+          if [ "$code" = "1" ]; then
+            echo "result=gate_failed" >> "$GITHUB_OUTPUT"
+          elif [ "$models" -gt 0 ]; then
+            echo "result=promoted" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = "0" ]; then
+            echo "result=nothing" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=error" >> "$GITHUB_OUTPUT"
+          fi
+          echo "candidate models written: $models, script exit code: $code"
+
+      - name: Extract the comparison table
+        if: steps.outcome.outputs.result != 'error'
+        shell: bash
+        run: |
+          # The gate's own table is the artefact worth surfacing, so it is
+          # lifted verbatim rather than re-rendered.
+          if grep -q "PROMOTION GATE" retrain-output.txt; then
+            sed -n '/PROMOTION GATE/,/negative change/p' retrain-output.txt > table.txt
+          else
+            # No table when the run stopped at the new-data check.
+            sed -n '/NEW DATA CHECK/,/^$/p' retrain-output.txt > table.txt
+          fi
+          cat table.txt
+
+      - name: Report - nothing to do
+        if: steps.outcome.outputs.result == 'nothing'
+        shell: bash
+        run: |
+          {
+            echo "### Continuous retraining: nothing to do"
+            echo ""
+            echo "Not enough new games since the models were last trained."
+            echo "This is the expected result for most of the year."
+            echo ""
+            echo '```'
+            cat table.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report - the gate refused
+        if: steps.outcome.outputs.result == 'gate_failed'
+        shell: bash
+        run: |
+          # THE JOB STILL SUCCEEDS. A refusal means the guard worked. Failing
+          # the run would put a red X on a correct outcome, and a job that is
+          # routinely red is a job people stop reading.
+          {
+            echo "### Continuous retraining: candidate REJECTED"
+            echo ""
+            echo "A retrained model regressed against production on the same"
+            echo "fresh test window. Nothing was promoted and no PR was opened."
+            echo ""
+            echo '```'
+            cat table.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Retraining produced a regression - see the run summary."
+
+      - name: Open a pull request with the promoted models
+        if: steps.outcome.outputs.result == 'promoted'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="retrain/$(date -u +%Y-%m-%d)"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+
+          # The candidates become the shipped models, so the PR is a
+          # mergeable change rather than a pile of files to move by hand.
+          cp ml-training/models_candidate/*.json ml-training/models/
+
+          # AND the data they were trained on. A PR carrying new weights on
+          # top of data that was never committed would not be reproducible -
+          # nobody could rebuild these models from the merged state.
+          git add ml-training/models/*.json
+          git add ml-training/models/trained_through.json
+          git add data-pipeline/data/processed/games_final.csv
+          git add data-pipeline/data/processed/player_boxscores_with_rolling.csv
+          # Named explicitly, never `git add -A`: CLAUDE.md lives in this
+          # working tree untracked and must not be swept in.
+
+          git commit -m "Retrain team-level models on data through $(date -u +%Y-%m-%d)"
+          git push origin "$branch"
+
+          {
+            echo "Automated retrain. The gate passed on all seven targets."
+            echo ""
+            echo "Production below is the shipped architecture **re-fit on the"
+            echo "candidate's own training rows** - not the deployed weights,"
+            echo "which were trained on the whole dataset and would be scored"
+            echo "on their own training data."
+            echo ""
+            echo '```'
+            cat table.txt
+            echo '```'
+            echo ""
+            echo "Merging this deploys the new models. Review the table first."
+          } > pr-body.md
+
+          gh pr create --title "Retrain: models through $(date -u +%Y-%m-%d)" \
+                       --body-file pr-body.md --base main --head "$branch"
+
+      - name: Fail the run only on a genuine error
+        if: steps.outcome.outputs.result == 'error'
+        shell: bash
+        run: |
+          echo "The retrain script exited unexpectedly."
+          tail -50 retrain-output.txt
+          exit 1
