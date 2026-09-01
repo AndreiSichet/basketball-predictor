@@ -177,21 +177,38 @@ def attach_advanced_rolling(df: pd.DataFrame) -> pd.DataFrame:
     if len(merged) != before:
         raise RuntimeError(f"advanced join changed rows: {before} -> {len(merged)}")
 
-    # The indicator is the point. These columns have real NaN from the
-    # rolling warm-up, so counting NaN cannot tell a failed merge from a
-    # team's first game of the season. Only the indicator can.
+    # UNMATCHED ROWS ARE REPORTED, NOT FATAL - and this is the ONLY merge in
+    # this file with that exemption. Every other one still raises.
+    #
+    # The reason is that these twenty columns are REJECTED FEATURES. Two
+    # experiments measured them against the 38-feature baseline and neither
+    # won, so they sit in train_baseline.UNUSED_FEATURE_COLUMNS and
+    # influence no shipped prediction (CLAUDE.md section 16). They are kept
+    # built because the evidence was worth preserving, not because anything
+    # consumes them.
+    #
+    # A hard assertion here means the first genuinely new game past the end
+    # of team_advanced_rolling.csv fails the whole pipeline - and the only
+    # way to satisfy it would be re-fetching 13,199 advanced box scores on
+    # every retrain, hours of ingestion to keep a merge happy that feeds
+    # nothing. A rejected feature set should not be able to block a
+    # production pipeline it has no influence over.
+    #
+    # Unmatched rows simply carry NaN in columns nothing reads. What the
+    # count still buys is visibility: a sudden jump to all 26,398 is a
+    # dtype mismatch, and looks nothing like the handful of new games this
+    # tolerates.
     unmatched = int((merged["_advanced_merge"] != "both").sum())
-    if unmatched:
-        raise RuntimeError(
-            f"{unmatched:,} team-game rows found no advanced-stats match. That is a "
-            f"failed merge, not a rolling warm-up - check that GAME_ID dtypes agree "
-            f"on both sides."
-        )
 
     merged = merged.drop(columns=["_advanced_merge"])
     added = [c for c in advanced.columns if c not in ("GAME_ID", "TEAM_ID")]
     print(f"Advanced rolling merged: {len(advanced):,} team-games, "
-          f"{len(added)} columns, 0 unmatched.")
+          f"{len(added)} columns, {unmatched:,} unmatched.")
+    if unmatched:
+        print(f"  {unmatched:,} row(s) have no advanced-stats match and will carry "
+              f"NaN in those columns. Not fatal: they are held out of "
+              f"FEATURE_COLUMNS and feed no prediction. A count near "
+              f"{len(merged):,} would mean a broken merge instead.")
     return merged
 
 

@@ -29,6 +29,13 @@ data-pipeline/data/processed/*
 # .gitattributes). It is listed here as a normal exception; LFS intercepts
 # it transparently on `git add`. CI needs `lfs: true` on actions/checkout
 # or it receives a pointer file instead of the data.
+# team_advanced_rolling.csv is the FOURTH instance of the same
+# reclassification. Nothing reads its columns for a prediction - they are
+# rejected features sitting in UNUSED_FEATURE_COLUMNS - but
+# build_final_dataset.py reads the FILE, so a fresh clone cannot build the
+# dataset without it. Rebuilding it needs 13,199 gitignored raw box scores,
+# which is hours of ingestion; committing 3.2 MB is the cheaper truth.
+!data-pipeline/data/processed/team_advanced_rolling.csv
 !data-pipeline/data/processed/quarter_half_raw.csv
 !data-pipeline/data/processed/player_boxscores_with_rolling.csv
 ml-training/models/*
