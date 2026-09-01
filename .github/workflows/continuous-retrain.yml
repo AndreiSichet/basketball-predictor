@@ -59,10 +59,22 @@ jobs:
           # and pulling it again would spend LFS bandwidth this setup was
           # partly chosen to stop spending.
 
+      # NO cache: pip HERE, deliberately, and it is not an oversight.
+      #
+      # That option works by shelling out to `pip cache dir` to find where to
+      # store downloads. A self-hosted runner installed as a Windows service
+      # inherits only the SYSTEM PATH, not the user-level PATH that a normal
+      # Python install writes itself into - so the service cannot find pip at
+      # all and the lookup fails before any caching happens.
+      #
+      # Removing it is the fix rather than a workaround, because the feature
+      # is solving a problem this runner does not have: it exists to spare
+      # GitHub-hosted runners from re-downloading packages onto a fresh disk
+      # every time. This runner keeps its filesystem between runs, so pip's
+      # own on-disk cache already persists with no wrapper around it.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-          cache: pip
 
       - name: Install the pinned pipeline and training dependencies
         shell: bash
