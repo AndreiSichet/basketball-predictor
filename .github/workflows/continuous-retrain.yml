@@ -100,9 +100,16 @@ jobs:
       - name: Install the pinned pipeline and training dependencies
         shell: powershell
         run: |
+          # python -m pip, never a bare `pip`. The pip shim is a separate
+          # executable in Scripts/ and needs its own PATH entry; going
+          # through the interpreter that the step above just verified means
+          # there is exactly one thing that has to resolve, and the packages
+          # land in that interpreter rather than whichever pip won a PATH
+          # race. Same reason cache: pip failed - it shelled out to a bare
+          # `pip cache dir`.
           python -m pip install --upgrade pip
-          pip install -r data-pipeline/requirements.txt
-          pip install -r ml-training/requirements.txt
+          python -m pip install -r data-pipeline/requirements.txt
+          python -m pip install -r ml-training/requirements.txt
 
       - name: Confirm the data corpus survived checkout
         shell: powershell
