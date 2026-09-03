@@ -92,6 +92,27 @@ jobs:
           # resolves from the local cache rather than the network.
           lfs: true
 
+      - name: Force-refresh LFS content
+        shell: powershell
+        run: |
+          # BELT AND BRACES OVER lfs: true, not a substitute for it, and the
+          # reason is clean: false. Checkout only smudges a file it thinks
+          # needs it; a working tree that ALREADY holds a pointer stub from
+          # a previous run can look up to date against the index, so the
+          # stub survives and the next reader gets a 130-byte CSV. That is
+          # precisely how the last failure stayed invisible.
+          #
+          # git lfs pull = fetch + checkout, and its checkout half replaces
+          # every file whose working-tree content is still a pointer,
+          # unconditionally. It is a no-op costing seconds when the content
+          # is already real.
+          #
+          # Requires git-lfs on the runner's PATH. It is bundled with Git
+          # for Windows, so it is present wherever actions/checkout worked.
+          $ErrorActionPreference = 'Continue'
+          git lfs pull
+          Write-Host "git lfs pull exited $LASTEXITCODE"
+
       # NO actions/setup-python STEP HERE, deliberately.
       #
       # It was removed rather than fixed. On a self-hosted runner the machine
@@ -145,6 +166,22 @@ jobs:
           Write-Host "player box scores on disk: $count"
           if ($count -lt 1000) {
             Write-Host "::warning::Only $count box-score files present. Ingestion will re-fetch the rest, which takes hours. Check that the runner's work directory persists and that checkout is not cleaning ignored files."
+          }
+
+          # The LFS-tracked file, checked by SIZE rather than existence,
+          # because the failure mode is a file that exists and is wrong: a
+          # ~130-byte pointer stub where 77 MB belongs. pandas then reports
+          # it as missing COLUMNS, which reads like a schema change and sent
+          # the last investigation the wrong way entirely.
+          #
+          # A hard failure, not a warning. There is no useful work left to
+          # do - the very first pipeline step reads this file.
+          $rolling = 'data-pipeline/data/processed/player_boxscores_with_rolling.csv'
+          $size = (Get-Item $rolling -ErrorAction SilentlyContinue).Length
+          Write-Host "player_boxscores_with_rolling.csv: $size bytes"
+          if ($size -lt 1MB) {
+            Write-Host "::error::$rolling is $size bytes - an LFS pointer stub, not the real file. lfs: true and git lfs pull both failed to resolve it."
+            exit 1
           }
 
       - name: Retrain and run the promotion gate
