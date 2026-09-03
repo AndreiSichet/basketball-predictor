@@ -65,9 +65,32 @@ jobs:
           # reintroduce the exact cold-start problem self-hosting exists to
           # avoid. Silently, visible only as a job that suddenly takes hours.
           clean: false
-          # No lfs: true. The runner's working copy already has the object,
-          # and pulling it again would spend LFS bandwidth this setup was
-          # partly chosen to stop spending.
+          # lfs: true IS EQUALLY LOAD-BEARING, and leaving it out is what
+          # broke the first real run. Exactly one file here is LFS-tracked -
+          # player_boxscores_with_rolling.csv - and without this flag
+          # checkout writes the ~130-byte POINTER STUB in its place instead
+          # of the 77 MB CSV. build_player_rolling_minutes.py's ROLL10_MIN
+          # regression guard reads that file and died with
+          #
+          #   ValueError: Usecols do not match columns, columns expected
+          #   but not found: ['ROLL10_MIN', 'PLAYER_ID', 'GAME_ID']
+          #
+          # which reads like a schema problem and is actually a missing
+          # file. Third occurrence of the bug class in CLAUDE.md section 4's
+          # standing rule, and the second where the symptom was a malformed
+          # CSV rather than an absent one.
+          #
+          # The comment that used to sit here argued the opposite: that the
+          # working copy already holds the object, so pulling it again would
+          # spend LFS bandwidth. The premise was true and the conclusion did
+          # not follow - checkout rewrites the working copy from the index
+          # regardless of what was there before.
+          #
+          # No bandwidth surprise either way. ci.yml already sets this on
+          # both jobs that read the file, so it is fetched on every push
+          # anyway, and .git/lfs survives between runs here, so the pull
+          # resolves from the local cache rather than the network.
+          lfs: true
 
       # NO actions/setup-python STEP HERE, deliberately.
       #
@@ -164,16 +187,27 @@ jobs:
           $models = @(Get-ChildItem 'ml-training/models_candidate/*.json' -ErrorAction SilentlyContinue |
                       Where-Object { $_.Name -ne 'trained_through.json' }).Count
 
-          # Three outcomes, deliberately distinguished rather than collapsed.
+          # FOUR outcomes, deliberately distinguished rather than collapsed.
           # Exit code alone cannot separate "nothing to do" from "promoted" -
           # the script returns 0 for both - so the candidate directory is
-          # what tells them apart.
-          if ($code -eq '1') {
-            $result = 'gate_failed'
-          } elseif ($models -gt 0) {
+          # what tells those two apart.
+          #
+          # 'error' USED TO BE UNREACHABLE IN PRACTICE. An unhandled Python
+          # exception exits 1, the same code as an honest gate refusal, so a
+          # crash was reported below as "candidate REJECTED, the guard worked
+          # as intended" - the reassuring message, for the one case that had
+          # not happened. The script now exits 2 when it never reached a
+          # comparison, which is what makes this branch real.
+          #
+          # Every branch keys off the EXIT CODE first and the directory
+          # second. The other order would let a crash that happened to leave
+          # files behind report itself as a promotion.
+          if ($code -eq '0' -and $models -gt 0) {
             $result = 'promoted'
           } elseif ($code -eq '0') {
             $result = 'nothing'
+          } elseif ($code -eq '1') {
+            $result = 'gate_failed'
           } else {
             $result = 'error'
           }
@@ -293,8 +327,26 @@ jobs:
         if: steps.outcome.outputs.result == 'error'
         shell: powershell
         run: |
-          Write-Host "The retrain script exited unexpectedly."
+          $code = '${{ steps.retrain.outputs.exit_code }}'
+          Write-Host "continuous_retrain.py exited $code - it never reached a verdict."
+          Write-Host "NOTHING was measured about model quality. This is not a regression."
+          Write-Host ""
           if (Test-Path retrain-output.txt) {
             Get-Content retrain-output.txt -Tail 50
+          } else {
+            Write-Host "No retrain-output.txt - the script failed before producing any."
           }
+
+          $summary = @(
+            '### Continuous retraining: SCRIPT ERROR',
+            '',
+            "The retrain script exited ``$code`` without completing a",
+            'comparison. No candidate was trained and no verdict was reached,',
+            'so this says nothing about whether the models are still good -',
+            'it is a broken job, not a rejected model.',
+            '',
+            'See the step log for the traceback.'
+          )
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
           exit 1

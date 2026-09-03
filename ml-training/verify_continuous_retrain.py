@@ -184,8 +184,12 @@ def main():
 
         print(f"\n  candidate models written: {len(promoted)}"
               f"{' (gate passed)' if promoted else ' (gate blocked promotion)'}")
-        print(f"  retrain exit code: {result.returncode} "
-              f"({'promoted' if result.returncode == 0 else 'refused to promote'})")
+        # Three-way, matching the script's exit contract. Reading any
+        # non-zero code as "refused" would report a crash as a
+        # measurement - the same conflation the wrapper had.
+        meaning = {0: "promoted", 1: "refused to promote"}.get(
+            result.returncode, "CRASHED - no verdict reached")
+        print(f"  retrain exit code: {result.returncode} ({meaning})")
 
         return 0 if all(ok for _, ok in checks) else 1
     finally:

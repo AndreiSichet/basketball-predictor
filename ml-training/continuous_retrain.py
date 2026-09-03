@@ -80,6 +80,7 @@ import argparse
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -141,6 +142,24 @@ DEFAULT_TOLERANCE_PCT = 2.0
 # Roughly two weeks of a full NBA schedule. Adjustable, and the right value
 # is a judgement about how fast the signal moves, not a fact.
 DEFAULT_MIN_NEW_GAMES = 100
+
+# EXIT CODES. These are part of this script's contract, not an internal
+# detail: the GitHub Actions wrapper reads them to decide which of three
+# genuinely different things to report.
+#
+# 1 AND 2 WERE THE SAME CODE UNTIL THE FIRST REAL RUN, and the conflation
+# was actively misleading rather than merely untidy. An unhandled Python
+# exception exits 1, so a crash inside the data refresh was indistinguishable
+# from a completed comparison the gate had refused - and the wrapper
+# reported it with the reassuring "the guard worked as intended" framing
+# reserved for the one case that had not happened.
+#
+# The distinction that matters is NOT "did something go wrong". It is
+# "was a comparison actually made". A refusal is a measurement; a crash is
+# the absence of one, and says nothing at all about model quality.
+EXIT_OK = 0       # reached a verdict: promoted, or nothing worth retraining
+EXIT_REFUSED = 1  # reached a verdict, and the gate refused to promote
+EXIT_ERROR = 2    # never reached a verdict - crashed on the way there
 
 
 def snapshot(path: Path) -> dict:
@@ -351,7 +370,7 @@ def main():
             print("  Skipping. Pass --force to retrain anyway; the marker is "
                   "written\n  alongside any candidates produced, so this "
                   "resolves itself after one run.")
-            return 0
+            return EXIT_OK
         print("  --force given: continuing.")
     else:
         cutoff = pd.Timestamp(marker["trained_through"])
@@ -367,7 +386,7 @@ def main():
             print(f"\n  Fewer than {args.min_new_games} new games. Nothing worth "
                   f"retraining on.")
             print("  Pass --force to retrain anyway.")
-            return 0
+            return EXIT_OK
         if new_games < args.min_new_games:
             print(f"\n  Below the {args.min_new_games}-game threshold, but "
                   f"--force was given.")
@@ -393,7 +412,7 @@ def main():
         print("All seven ship together - they share a feature set and a")
         print("dataset, so promoting a subset would leave the served models")
         print("trained on different data as each other.")
-        return 1
+        return EXIT_REFUSED
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for stale in args.output_dir.glob("*.json"):
@@ -408,8 +427,30 @@ def main():
     print("run can tell how much data these have already seen.")
     print("ml-training/models/ is UNTOUCHED. Promoting these is a separate,")
     print("human decision - a pull request once the scheduled job exists.")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        code = main()
+    except SystemExit:
+        # argparse exits by itself on a bad argument and already carries a
+        # code. Nothing here to reinterpret.
+        raise
+    except Exception:
+        # Deliberately Exception, not BaseException: a Ctrl+C or a cancelled
+        # job is not a crash to report, and GitHub marks a cancelled run
+        # cancelled regardless of what is returned.
+        traceback.print_exc()
+        print()
+        print("=" * 78)
+        print("CRASHED BEFORE REACHING A VERDICT")
+        print("=" * 78)
+        print("This is NOT a gate refusal. No comparison was made, so nothing")
+        print("above says anything about whether a retrained model would be")
+        print("better or worse than production.")
+        print()
+        print(f"Exiting {EXIT_ERROR} so the caller can tell the two "
+              f"apart. A real refusal exits {EXIT_REFUSED}.")
+        code = EXIT_ERROR
+    raise SystemExit(code)
