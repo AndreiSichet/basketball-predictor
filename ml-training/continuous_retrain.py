@@ -68,10 +68,15 @@ with an honest message below the threshold.
   when candidates are produced. Before the first promotion there is no
   marker, and the check says so rather than guessing.
 
-SCOPE: the seven team-level models only. Quarter/half and player props are
-deliberately out - same "smallest defensible slice first" discipline as
-Q1-and-1H-only and PACE/TS_PCT-only before them. Player-level data IS still
-refreshed, because availability is part of the shipped 38 features.
+SCOPE: the seven team-level models only. The quarter/half and player-prop
+MODELS are deliberately out - same "smallest defensible slice first"
+discipline as Q1-and-1H-only and PACE/TS_PCT-only before them.
+
+  Their DATA is a separate question from their models, and the answer
+  differs for each. Player-level data is refreshed because availability is
+  part of the shipped 38 features. Quarter/half data is refreshed for a
+  blunter reason: build_final_dataset.py refuses to build without it. See
+  REFRESH_STEPS.
 
 Run:  python ml-training/continuous_retrain.py [--skip-refresh]
 """
@@ -104,11 +109,28 @@ CANDIDATE_DIR = Path(__file__).resolve().parent / "models_candidate"
 # Without it the "how much is new" question has no answer.
 TRAINED_THROUGH = "trained_through.json"
 
-# The pipeline, in dependency order. Ingestion first - both fetchers skip
-# what is already on disk, so a run pays only for genuinely new games, not
-# a full re-pull. Quarter scores and advanced stats are deliberately absent:
-# out of scope, and re-fetching either would cost hours to feed models this
-# job does not touch.
+# The pipeline, in dependency order. Every fetcher skips what is already on
+# disk, so a run pays only for genuinely new games rather than a full
+# re-pull.
+#
+# QUARTER SCORES ARE IN THIS LIST EVEN THOUGH NO MODEL HERE USES THEM, and
+# the reason is not scope - it is that build_final_dataset.py hard-requires
+# them. attach_quarter_half() raises on any unmatched GAME_ID it does not
+# already know about, and attach_quarter_half_rolling() raises on any
+# unmatched row at all. A newly-fetched game with no quarter data is exactly
+# that, so omitting these three steps does not produce stale columns; it
+# crashes the refresh outright on the first run that finds new games.
+#
+#   The earlier version of this comment said quarter scores were
+#   "deliberately absent: out of scope". The scope reasoning was right and
+#   the conclusion was wrong, because the dataset builder does not share
+#   this job's scope.
+#
+# ADVANCED STATS STAY OUT, and the asymmetry is real rather than an
+# oversight: attach_advanced_rolling() was relaxed to warn-and-carry-NaN,
+# so its columns simply go missing for new games instead of failing. It
+# also feeds nothing in the 38-feature set. Quarter/half had no such
+# exemption and was never given one.
 REFRESH_STEPS = [
     PIPELINE / "ingestion" / "fetch_games.py",
     PIPELINE / "ingestion" / "fetch_player_boxscores.py",
@@ -117,8 +139,16 @@ REFRESH_STEPS = [
     PIPELINE / "preprocessing" / "build_rolling_features.py",
     PIPELINE / "preprocessing" / "build_rest_days.py",
     PIPELINE / "preprocessing" / "build_elo_ratings.py",
+    # ^ games_final.csv exists from here on. Everything below reads it.
     PIPELINE / "preprocessing" / "build_player_rolling_minutes.py",
     PIPELINE / "preprocessing" / "build_team_availability.py",
+    # The quarter/half chain. It CANNOT move above build_elo_ratings.py:
+    # fetch_quarter_scores.py reads games_final.csv to decide which games to
+    # fetch, so running it earlier would hand it the previous run's file and
+    # silently skip every new game - the failure this block exists to stop.
+    PIPELINE / "ingestion" / "fetch_quarter_scores.py",
+    PIPELINE / "preprocessing" / "build_quarter_half_raw.py",
+    PIPELINE / "preprocessing" / "build_quarter_half_rolling.py",
     PIPELINE / "preprocessing" / "build_final_dataset.py",
 ]
 
