@@ -69,22 +69,33 @@ jobs:
           # and pulling it again would spend LFS bandwidth this setup was
           # partly chosen to stop spending.
 
-      # NO cache: pip HERE, deliberately, and it is not an oversight.
+      # NO actions/setup-python STEP HERE, deliberately.
       #
-      # That option works by shelling out to `pip cache dir` to find where to
-      # store downloads. A self-hosted runner installed as a Windows service
-      # inherits only the SYSTEM PATH, not the user-level PATH that a normal
-      # Python install writes itself into - so the service cannot find pip at
-      # all and the lookup fails before any caching happens.
+      # It was removed rather than fixed. On a self-hosted runner the machine
+      # already has the Python this project is pinned against, and installing
+      # a second one would mean the workflow trains with a different
+      # interpreter than every number in CLAUDE.md was produced on.
       #
-      # Removing it is the fix rather than a workaround, because the feature
-      # is solving a problem this runner does not have: it exists to spare
-      # GitHub-hosted runners from re-downloading packages onto a fresh disk
-      # every time. This runner keeps its filesystem between runs, so pip's
-      # own on-disk cache already persists with no wrapper around it.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
+      # Its cache: pip option had already failed for a related reason: it
+      # shells out to `pip cache dir`, and a runner installed as a Windows
+      # service inherits only the SYSTEM PATH, not the user-level PATH a
+      # normal Python install writes itself into.
+      #
+      # That is the same trap twice, so the assumption underneath - "the
+      # host's Python is visible to the service" - is checked below rather
+      # than relied on. It is cheap to check and expensive to assume: the
+      # service account's PATH is genuinely different from an interactive
+      # terminal's, and both failures so far looked fine when tested by hand.
+      - name: Verify host Python is visible to this service
+        shell: powershell
+        run: |
+          # where.exe rather than just --version: WHICH python resolved is
+          # the actual question. A service picking up a different
+          # interpreter than the interactive shell is the failure mode being
+          # ruled out, and that is invisible from a version number alone.
+          where.exe python
+          python --version
+          python -c "import ctypes; print('ctypes OK')"
 
       - name: Install the pinned pipeline and training dependencies
         shell: powershell
