@@ -3,6 +3,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# The continuous-retrain workflow's own interpreter, created in the
+# runner's workspace - which IS this directory on the self-hosted
+# runner. `venv/` above does not cover it (that rule matches a
+# directory literally named venv), and clean: false means it persists
+# between runs, so without this an interactive `git add .` would sweep
+# in thousands of files. See CLAUDE.md section 24.
+.ct-venv/
 
 # Data & ML artifacts
 data-pipeline/data/raw/*

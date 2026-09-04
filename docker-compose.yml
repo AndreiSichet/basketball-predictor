@@ -10,6 +10,20 @@
 services:
   postgres:
     image: postgres:17
+    # restart: unless-stopped on every service. Without it Docker defaults
+    # to `no`, so nothing comes back after a reboot or a crash - and the
+    # visible symptom is not an error but a STALE one: ScheduleSyncService
+    # only runs while the backend is up, so the browse view keeps serving a
+    # frozen fixture list with no sign it has stalled.
+    #
+    # `unless-stopped` rather than `always` deliberately: with `always`, a
+    # container you deliberately stopped comes back on the next Docker
+    # restart, which makes `docker compose down` feel broken. This respects
+    # an explicit stop while still recovering from crashes and reboots.
+    #
+    # This only works if Docker Desktop itself starts on login - otherwise
+    # there is nothing running to do the restarting.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: basketball_predictor
       POSTGRES_PASSWORD: postgres
@@ -30,6 +44,7 @@ services:
       retries: 10
 
   inference-service:
+    restart: unless-stopped
     build:
       # Context is the repository root: this service imports from
       # ml-training/ and data-pipeline/, so the siblings must be visible.
@@ -39,6 +54,7 @@ services:
       - "8000:8000"
 
   backend:
+    restart: unless-stopped
     build:
       # Context is backend/ - it only needs its own pom.xml and src/.
       context: backend
@@ -59,6 +75,7 @@ services:
         condition: service_started
 
   frontend:
+    restart: unless-stopped
     build:
       context: frontend
       dockerfile: Dockerfile

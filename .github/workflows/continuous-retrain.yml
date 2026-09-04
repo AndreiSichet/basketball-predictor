@@ -141,6 +141,36 @@ jobs:
           python --version
           python -c "import ctypes; print('ctypes OK')"
 
+      # WHY A VENV, when the runner already has a working Python.
+      #
+      # Without one, `python -m pip install` lands wherever `python` happens
+      # to resolve - which is NOT the same interpreter in both contexts.
+      # Interactively it is this project's own root .venv; under the runner
+      # service it is the base install. So a weekly unattended job could
+      # silently upgrade the environment that every recorded number in
+      # CLAUDE.md was produced on.
+      #
+      # Pinning direct dependencies does not help if the interpreter itself
+      # is ambiguous. This is the same move as `python -m pip` over a bare
+      # `pip`: REMOVE the ambiguity rather than try to control it. Every
+      # Python call below names an explicit interpreter, so nothing after
+      # this point depends on PATH resolution at all.
+      #
+      # Persisted between runs on purpose - clean: false already keeps it,
+      # and recreating it weekly would mean a full reinstall for no benefit.
+      - name: Create an isolated environment for this run
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not (Test-Path .ct-venv)) {
+            Write-Host "creating .ct-venv"
+            python -m venv .ct-venv
+          } else {
+            Write-Host ".ct-venv already present, reusing it"
+          }
+          .\.ct-venv\Scripts\python.exe --version
+          .\.ct-venv\Scripts\python.exe -c "import ctypes; print('ctypes OK')"
+
       - name: Install the pinned pipeline and training dependencies
         shell: powershell
         run: |
@@ -151,9 +181,15 @@ jobs:
           # land in that interpreter rather than whichever pip won a PATH
           # race. Same reason cache: pip failed - it shelled out to a bare
           # `pip cache dir`.
-          python -m pip install --upgrade pip
-          python -m pip install -r data-pipeline/requirements.txt
-          python -m pip install -r ml-training/requirements.txt
+          $py = '.\.ct-venv\Scripts\python.exe'
+          & $py -m pip install --upgrade pip
+          & $py -m pip install -r data-pipeline/requirements.txt
+          & $py -m pip install -r ml-training/requirements.txt
+
+          # Proof the isolation held. If this prints a path outside
+          # .ct-venv, the step above installed into the wrong interpreter
+          # and the whole point was lost.
+          & $py -c "import pandas, sys; print('pandas from:', pandas.__file__); print('exe:', sys.executable)"
 
       - name: Confirm the data corpus survived checkout
         shell: powershell
@@ -206,7 +242,8 @@ jobs:
             Remove-Item 'ml-training/models_candidate' -Recurse -Force
           }
 
-          python ml-training/continuous_retrain.py --min-new-games 100 2>&1 |
+          $py = '.\.ct-venv\Scripts\python.exe'
+          & $py ml-training/continuous_retrain.py --min-new-games 100 2>&1 |
             Tee-Object -FilePath retrain-output.txt
 
           # $LASTEXITCODE is the native process's code and survives the
