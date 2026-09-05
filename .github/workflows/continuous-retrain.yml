@@ -406,7 +406,7 @@ jobs:
           Write-Host "NOTHING was measured about model quality. This is not a regression."
           Write-Host ""
           if (Test-Path retrain-output.txt) {
-            Get-Content retrain-output.txt -Tail 50
+            Get-Content retrain-output.txt -Tail 300
           } else {
             Write-Host "No retrain-output.txt - the script failed before producing any."
           }
