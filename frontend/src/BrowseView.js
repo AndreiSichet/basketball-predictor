@@ -94,16 +94,19 @@ function BrowseView({ games, onGamesLoaded, onSelect }) {
   return (
     <div>
       <header className="intro">
-        <h1>Basketball Predictor</h1>
+        <h1>Modellarium</h1>
         <p>
-          Seven self-trained models over eleven seasons of NBA game data,
-          predicting the winner, the margin, and the totals for points,
-          rebounds and assists.
+          A personal sportsbook, in active development. For each NBA game it
+          predicts the winner, the margin, and the totals for points,
+          rebounds and assists — the same again for the first quarter and
+          the first half — plus five stats for each player.
         </p>
         <p className="intro-note">
-          Predictions are built from each team's form, rest and Elo going
-          into a game, so only the next game after the latest results can be
-          scored — fixtures further out are listed but not predictable.
+          Every number comes from models trained on eleven seasons of
+          results, using each team's form, rest and Elo going into the game.
+          Only the next game after the latest results can be scored, so
+          fixtures further out are listed but not predictable. The NBA is
+          the only sport so far.
         </p>
       </header>
 

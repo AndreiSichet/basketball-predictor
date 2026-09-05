@@ -150,8 +150,8 @@ describe('browse view', () => {
   test('describes the app before anything is fetched', () => {
     render(<App />);
 
-    expect(screen.getByText('Basketball Predictor')).toBeInTheDocument();
-    expect(screen.getByText(/Seven self-trained models/)).toBeInTheDocument();
+    expect(screen.getByText('Modellarium')).toBeInTheDocument();
+    expect(screen.getByText(/A personal sportsbook/)).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Fetch future games' })
     ).toBeInTheDocument();
