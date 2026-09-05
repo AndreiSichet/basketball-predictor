@@ -38,15 +38,27 @@ ADVANCED_ROLLING_PATH = PROCESSED_DATA_DIR / "team_advanced_rolling.csv"
 QUARTER_HALF_PATH = PROCESSED_DATA_DIR / "quarter_half_raw.csv"
 QUARTER_HALF_ROLLING_PATH = PROCESSED_DATA_DIR / "quarter_half_rolling.csv"
 OUTPUT_PATH = PROCESSED_DATA_DIR / "model_dataset.csv"
+QUARTER_SCORES_FAILURES_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "raw"
+    / "quarter_scores_failures.log"
+)
 
-# Three games (2025-11-19) could not be fetched: BoxScoreSummaryV3 raises an
-# internal AttributeError on them, reproducibly. Six team-game rows therefore
-# have no quarter data. That is expected and is NOT a merge failure, so the
-# indicator check below asserts this exact count rather than zero - which
-# keeps the check meaningful: a real dtype mismatch would show up as 26,398
-# unmatched rows, not 6.
-QUARTER_HALF_MISSING_GAMES = [22500259, 22500260, 22500261]
-EXPECTED_UNMATCHED_QUARTER_ROWS = len(QUARTER_HALF_MISSING_GAMES) * 2
+# WHICH GAMES ARE ALLOWED TO BE MISSING IS READ FROM THE FETCHER'S OWN
+# RECORD, not hardcoded here.
+#
+# Three games (2025-11-19) cannot be fetched at all: BoxScoreSummaryV3
+# raises an internal AttributeError on them, reproducibly. Six team-game
+# rows therefore have no quarter data, which is expected and is NOT a merge
+# failure. That much has been true since the corpus was built.
+#
+# It used to be a literal list of those three ids, and that had no expiry
+# condition: the first time ANY new game failed to fetch - one nba_api
+# hiccup - this merge would see an unfamiliar id and crash the whole
+# retrain. Deriving the set from quarter_scores_failures.log instead means
+# the expectation tracks reality without anyone editing a constant.
+#
+# The strictness is unchanged. An unmatched game that is not in the log
+# still raises, loudly, which is the entire point of the check.
 
 # Known before tip-off, safe to train on. ABSENT_COUNT and
 # WEIGHTED_ABSENT_MIN describe who is unavailable for this game, weighted by
@@ -212,6 +224,55 @@ def attach_advanced_rolling(df: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def read_known_fetch_failures() -> set:
+    """Game ids fetch_quarter_scores.py has ever failed on.
+
+    THE LOG IS APPEND-ONLY - confirmed at the source, `open("a", ...)` with
+    no truncation anywhere in that script - so this is a record of every
+    failure ever, not of current ones. Two consequences drive the design:
+
+      * The same id appears once per ATTEMPT, so retries produce repeats and
+        the result has to be a set. The three permanently-broken games add 9
+        lines to this file on every single run (3 games x 3 attempts).
+      * A game that failed once and succeeded later stays here forever.
+        That is why the caller checks membership in ONE DIRECTION only.
+
+    int(), not the raw string, and this is not redundant with the split.
+    The log stores the zero-padded 10-character form ("0022500259") while
+    GAME_ID in the dataset is int64 (22500259). Comparing the two as-is
+    yields sets that can never intersect, so every unmatched game would look
+    unexpected and this merge would raise on every run - a type bug wearing
+    a data bug's clothes. attach_quarter_half() already reconciles the same
+    way when it reads quarter_half_raw.csv.
+
+    A MALFORMED LINE RAISES rather than being skipped. Silently dropping one
+    is how a genuinely unexpected failure slips into the "expected" set
+    unnoticed - the same reasoning as everywhere else here.
+    """
+    if not QUARTER_SCORES_FAILURES_PATH.exists():
+        # No log means nothing is known to have failed, so any unmatched
+        # game is genuinely unexpected. Letting the caller raise is correct.
+        return set()
+
+    failures = set()
+    with QUARTER_SCORES_FAILURES_PATH.open(encoding="utf-8") as log:
+        for number, line in enumerate(log, start=1):
+            # .strip() and not just rstrip("\n"): the file carries CRLF, and
+            # a trailing \r inside the id would survive the tab split.
+            text = line.strip()
+            if not text:
+                continue
+            game_id, _, reason = text.partition("\t")
+            if not reason or not game_id.isdigit():
+                raise RuntimeError(
+                    f"{QUARTER_SCORES_FAILURES_PATH.name} line {number} is not "
+                    f"'<game_id>\\t<reason>': {line!r}. Refusing to guess which "
+                    f"games are allowed to be missing."
+                )
+            failures.add(int(game_id))
+    return failures
+
+
 def attach_quarter_half(df: pd.DataFrame) -> pd.DataFrame:
     """Join Q1 and first-half scoring onto each team-game row.
 
@@ -242,21 +303,48 @@ def attach_quarter_half(df: pd.DataFrame) -> pd.DataFrame:
 
     # Asserted against the known gap, not against zero. A dtype mismatch
     # would strand all 26,398 rows, so this still fails loudly for the
-    # reason the indicator exists - it just tolerates the one gap that is
-    # understood and documented.
+    # reason the indicator exists - it just tolerates the gaps the fetcher
+    # itself recorded.
     unmatched = merged.loc[merged["_quarter_merge"] != "both", "GAME_ID"]
-    unexpected = sorted(set(unmatched) - set(QUARTER_HALF_MISSING_GAMES))
-    if len(unmatched) != EXPECTED_UNMATCHED_QUARTER_ROWS or unexpected:
+    unmatched_games = set(unmatched)
+    known_failures = read_known_fetch_failures()
+
+    # ONE DIRECTION ONLY, and the asymmetry is the point. Every unmatched
+    # game must be in the log; a logged game that merged fine is not a
+    # problem. The log is append-only, so an id that failed once and
+    # succeeded on a later retry stays in it forever - an equality check
+    # would turn that stale entry into a false alarm.
+    unexpected = sorted(unmatched_games - known_failures)
+    if unexpected:
         raise RuntimeError(
-            f"quarter/half merge left {len(unmatched):,} rows unmatched, expected "
-            f"exactly {EXPECTED_UNMATCHED_QUARTER_ROWS} from games "
-            f"{QUARTER_HALF_MISSING_GAMES}. Unexpected game ids: "
-            f"{unexpected[:10]}. Check the GAME_ID dtypes on both sides."
+            f"quarter/half merge left {len(unmatched):,} rows unmatched across "
+            f"{len(unmatched_games)} game(s), and {len(unexpected)} of those "
+            f"game(s) are NOT in {QUARTER_SCORES_FAILURES_PATH.name}: "
+            f"{unexpected[:10]}. Either the fetch genuinely failed without "
+            f"being logged, or the GAME_ID dtypes disagree on the two sides."
+        )
+
+    # Each missing game strands exactly its two team-rows, never more. This
+    # replaces the old hardcoded "exactly 6" and keeps the property that
+    # number was really checking, without a constant that expires: a merge
+    # that stranded 12 rows across 3 games would pass a pure subset test.
+    if len(unmatched) != 2 * len(unmatched_games):
+        raise RuntimeError(
+            f"quarter/half merge left {len(unmatched):,} unmatched rows across "
+            f"{len(unmatched_games)} game(s); expected exactly 2 per game. "
+            f"A game should strand its home and away rows together or not at "
+            f"all, so this means the merge key is wrong."
         )
 
     merged = merged.drop(columns=["_quarter_merge"])
+    # Both numbers printed rather than one, and the log's own size beside
+    # them: if the recorded-failure count drifts far above the number
+    # actually unmatched, the log has accumulated stale entries from games
+    # that later succeeded. Visible without anyone going looking.
     print(f"Quarter/half merged: {len(quarters):,} team-games, "
-          f"{EXPECTED_UNMATCHED_QUARTER_ROWS} unmatched (the known missing games).")
+          f"{len(unmatched)} unmatched row(s) across {len(unmatched_games)} game(s), "
+          f"all present in {QUARTER_SCORES_FAILURES_PATH.name} "
+          f"(which records {len(known_failures)} distinct game(s)).")
     return merged
 
 
@@ -268,6 +356,16 @@ def attach_quarter_half_rolling(df: pd.DataFrame) -> pd.DataFrame:
     missing games back in as NaN rows so their absence propagates through
     the rolling windows instead of quietly shortening them. So zero
     unmatched is the right assertion here, exactly as for advanced rolling.
+
+    THIS FUNCTION STAYS STRICT WHILE attach_quarter_half() CONSULTS THE
+    FETCHER'S FAILURES LOG, and that inconsistency is deliberate rather than
+    an oversight - do not harmonise them. A fetch failure shows up in the
+    two files by different mechanisms: quarter_half_raw.csv simply has no
+    row for the game, while this file HAS a row that is all NaN. So an
+    unmatched row here does not mean "a game could not be fetched", it means
+    the reindex-onto-the-full-universe step did not do its job, which no
+    failures log can excuse. Same shape as the attach_advanced_rolling()
+    asymmetry documented in CLAUDE.md section 12.
 
     The NaN these columns carry is the ordinary rolling warm-up plus that
     propagation - both legitimate - which is why the indicator does the
