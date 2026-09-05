@@ -2,7 +2,7 @@
 BACKEND INSIGHTS
 Basketball Predictor - Spring Boot backend
 Written:      19 August 2026  (version 1)
-Last updated: 31 August 2026  (three prediction domains, cached schedule)
+Last updated:  5 September 2026  (all five Python response shapes pinned)
 ===============================================================================
 
 WHO THIS DOCUMENT IS FOR
@@ -1003,21 +1003,61 @@ STOPPING
     cd backend
     DB_PASSWORD=postgres ./mvnw test
 
-  There are four, up from one. All four need a running PostgreSQL except
-  where noted; the continuous-integration pipeline provides one.
+  There are fourteen, up from one. Only some need a running PostgreSQL;
+  the continuous-integration pipeline provides one. (An earlier version of
+  this document said "four" - it was already out of date by two.)
 
   contextLoads
       Starts the whole application against a real database. Proves every
       class wires together and every setting is valid. This is the test
       that catches "it does not even start".
 
-  InferenceHealthTest  (two tests, NO database needed)
-      Feeds a REAL captured response from the Python service into the Java
-      class meant to receive it. Exists because those two sides silently
-      drifted apart once - see 12.7. The fixture is copied verbatim from an
-      actual response rather than written from the Java side, because a
-      fixture derived from the Java class would have drifted along with it
-      and caught nothing.
+  InferenceWireShapeTest  (ten tests, NO database needed)
+      The largest group, and the one guarding the failure this document
+      keeps returning to: the Java side and the Python side describing the
+      same response differently, with nothing to notice.
+
+      There are FIVE Java classes that read a Python response - one per
+      endpoint the backend calls. Each has a test here that feeds it a real
+      captured response and checks the values arrive intact.
+
+      Three things about it are deliberate and easy to undo by accident:
+
+      * THE FIXTURES ARE REAL, captured from a running service with curl
+        and saved exactly as they arrived, in
+        src/test/resources/fixtures/. A fixture typed out from the Java
+        class would change whenever that class changed, so it could never
+        notice the very drift it exists to catch. This is not a
+        hypothetical: it is why the original 12.7 bug went unnoticed.
+
+      * THE TESTS LOOK DEEP INSIDE. Two of these responses nest two or
+        three levels down - a list of teams, each holding a list of
+        players, each holding a set of predicted numbers. A test that only
+        checked the outer object would pass while the inside arrived empty,
+        which is the quietest way this could break. So the player test
+        checks a named player's five actual numbers, three levels in.
+
+      * THEY USE THE SAME JSON READER THE RUNNING APPLICATION USES, not a
+        fresh one built for the test. A test that reads JSON differently
+        from production is testing something other than production. The
+        earlier version of this test did exactly that; the two readers were
+        measured and happen to behave identically today, so nothing was
+        actually broken - but a test that validates the wrong thing cannot
+        tell you when that stops being true.
+
+      WHAT THEY CATCH AND WHAT THEY DO NOT, decided on purpose rather than
+      by accident: if Python REMOVES a field or CHANGES ITS TYPE, these
+      tests fail. If Python ADDS a field, they pass. That is the right way
+      round - a new field is a harmless addition the backend should
+      tolerate, while the two destructive changes are the ones that have
+      actually caused outages.
+
+  GameServiceUpcomingDateTest  (two tests)
+      Checks that "upcoming games" means games in the future. Nothing ever
+      marks a game as played, so "not played" had quietly stopped meaning
+      "still to come" once hundreds of fixtures were being cached. Includes
+      a boundary case pinning that a game dated TODAY still counts as
+      upcoming, since the two spellings of that rule are one word apart.
 
   GameServiceQueryCountTest
       Asks for the upcoming-games list and counts how many database queries
@@ -1214,6 +1254,12 @@ apply. 12.7 onwards are new.
   exactly the production error, which is the only way to know a guard
   actually guards.
 
+  LATER: that test covered one response shape out of five, and built its
+  own JSON reader instead of using the application's. It was folded into
+  InferenceWireShapeTest in September, which covers all five - see 12.11.
+  The account above is left as it was written, because it was accurate then
+  and the reasoning still holds.
+
   THE GENERAL LESSON: this backend has six classes mirroring Python
   response shapes. Any of them can drift the same way.
 
@@ -1288,6 +1334,56 @@ apply. 12.7 onwards are new.
   initially dismissed as a stale editor index. The build proved the editor
   right. Worth a moment's check before assuming tooling is wrong.
 
+
+12.11  Only one of five response shapes was actually guarded  [NEW]
+-------------------------------------------------------------------------------
+  WHAT WAS WRONG
+  After 12.7, a test was added pinning the shape of the health response.
+  That covered one of the five places the backend reads a Python response.
+  The other four had nothing, and any of them could have broken the same
+  silent way.
+
+  There was also a subtler problem with the test itself. It built its own
+  JSON reader rather than using the one the running application uses. Those
+  are two different objects that can be configured differently, so the test
+  was checking something adjacent to production rather than production.
+
+  HOW THE LIST WAS FOUND
+  Not by reading the folder of classes, which holds both directions -
+  responses coming in from Python, and the backend's own replies going out
+  to the website. Only the incoming ones can be broken by a change on the
+  Python side. So the list was taken from the one class that actually talks
+  to Python, by looking at which types it asks for. That gave five, not the
+  six an earlier note had claimed: the sixth was the REQUEST body, which
+  the backend sends rather than receives, so a change to Python's replies
+  cannot affect it.
+
+  THE FIX
+  All five now have tests, in one class so they cannot drift apart, all
+  using the application's own JSON reader, all fed responses captured from
+  the live service.
+
+  TWO THINGS THAT WENT WRONG WHILE BUILDING IT, both worth keeping:
+
+  * The first capture was not faithful. PowerShell read the response as
+    Western European text when it was actually UTF-8, which turned the
+    player name "Vit Krejci" into garbled characters. Saved that way, the
+    fixture would have been a record of a bug rather than of the service.
+    curl writes the bytes exactly as they arrived.
+
+  * The first attempt at DELIBERATELY BREAKING each test - to prove it
+    would notice - reported that none of them noticed. That was the
+    checking script reading the wrong summary line, not the tests failing
+    to work. Once corrected, four of five caught their sabotage
+    immediately. The fifth needed a better sabotage: the field being
+    removed was one the test expects to be empty, and a test that expects
+    nothing cannot tell you when nothing arrives. Breaking a field that
+    carries real text made it fail correctly.
+
+  THE LESSON
+  A guard that has never been shown to fail has not been shown to work.
+  Every one of these five was deliberately broken and confirmed to notice
+  before being trusted.
 
 ===============================================================================
 13. DESIGN DECISIONS AND WHY
@@ -1426,9 +1522,14 @@ These are understood and accepted, not oversights.
    local machine, not acceptable if exposed publicly.
 
 10. TEST COVERAGE IS BETTER BUT STILL THIN
-   Four automated tests, up from one, and the three new ones each guard a
-   bug that actually happened. Nothing yet covers the prediction endpoints
-   end to end; those are still checked by hand.
+   Fourteen automated tests, up from one, and every one of them guards
+   something that actually went wrong. All five Python response shapes are
+   now pinned, which closes the largest gap.
+
+   What is still missing is the layer in between: nothing exercises a
+   prediction endpoint end to end - website request, database write,
+   response - so the wiring between the pieces is still checked by hand.
+   The shapes are guarded; the journey is not.
 
 11. TWO FIELD NAMES DISAGREE
     The original endpoint returns the game id as "id"; the two new ones use
