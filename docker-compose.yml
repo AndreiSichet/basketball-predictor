@@ -10,20 +10,39 @@
 services:
   postgres:
     image: postgres:17
-    # restart: unless-stopped on every service. Without it Docker defaults
-    # to `no`, so nothing comes back after a reboot or a crash - and the
-    # visible symptom is not an error but a STALE one: ScheduleSyncService
-    # only runs while the backend is up, so the browse view keeps serving a
-    # frozen fixture list with no sign it has stalled.
+    # restart: always on every service. With no policy at all Docker
+    # defaults to `no`, so nothing comes back after a reboot or a crash -
+    # and the visible symptom is not an error but a STALE one:
+    # ScheduleSyncService only runs while the backend is up, so the browse
+    # view keeps serving a frozen fixture list with no sign it has stalled.
     #
-    # `unless-stopped` rather than `always` deliberately: with `always`, a
-    # container you deliberately stopped comes back on the next Docker
-    # restart, which makes `docker compose down` feel broken. This respects
-    # an explicit stop while still recovering from crashes and reboots.
+    # THIS WAS `unless-stopped` FIRST, AND WINDOWS FAST STARTUP IS WHY IT
+    # IS NOT ANY MORE. Measured rather than guessed - the Kernel-Boot event
+    # log (event 27) records each boot's type, and the two tests disagree:
     #
-    # This only works if Docker Desktop itself starts on login - otherwise
-    # there is nothing running to do the restarting.
-    restart: unless-stopped
+    #   2026-09-04 17:50  full boot (a Windows *Restart*)    -> came back
+    #   2026-09-05 13:35  FAST STARTUP (shutdown + power on) -> did NOT
+    #
+    # With Fast Startup - HiberbootEnabled = 1, the Windows default - a
+    # shutdown hibernates the kernel session, so Docker Desktop gets a
+    # clean shutdown window and *stops* the containers. That sets the same
+    # manually-stopped flag `docker stop` sets, and `unless-stopped`
+    # respects it, so they stay down through the next boot. `always`
+    # ignores that flag when the daemon starts. That one difference is the
+    # entire reason for this line.
+    #
+    # The cost of `always` is narrower than it first looks: `docker compose
+    # down` REMOVES containers, so they never return under any policy. The
+    # only real consequence is that a container stopped by hand with
+    # `docker stop` comes back after a Docker Desktop restart - a small
+    # annoyance weighed against the stack being down after every ordinary
+    # shutdown.
+    #
+    # This still only works if Docker Desktop itself starts on login -
+    # otherwise there is nothing running to do the restarting. Verified two
+    # ways: settings-store.json carries "AutoStart": true, and the
+    # HKCU\...\Run key carries a Docker Desktop entry.
+    restart: always
     environment:
       POSTGRES_DB: basketball_predictor
       POSTGRES_PASSWORD: postgres
@@ -44,7 +63,7 @@ services:
       retries: 10
 
   inference-service:
-    restart: unless-stopped
+    restart: always
     build:
       # Context is the repository root: this service imports from
       # ml-training/ and data-pipeline/, so the siblings must be visible.
@@ -54,7 +73,7 @@ services:
       - "8000:8000"
 
   backend:
-    restart: unless-stopped
+    restart: always
     build:
       # Context is backend/ - it only needs its own pom.xml and src/.
       context: backend
@@ -75,7 +94,7 @@ services:
         condition: service_started
 
   frontend:
-    restart: unless-stopped
+    restart: always
     build:
       context: frontend
       dockerfile: Dockerfile
